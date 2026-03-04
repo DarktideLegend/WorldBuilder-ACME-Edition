@@ -1,5 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using System.Linq;
 
 namespace WorldBuilder.Editors.Dungeon {
     public partial class CellSurfaceSlot : ObservableObject {
@@ -24,6 +26,54 @@ namespace WorldBuilder.Editors.Dungeon {
         public string? DetailOverride { get; set; }
         public int CellCount => Prefab.Cells.Count;
         public int OpenPortals => Prefab.OpenPortalCount;
+
+        /// <summary>Compact cell count badge text like "3c".</summary>
+        public string CellCountBadge => $"{Prefab.Cells.Count}c";
+
+        /// <summary>Open doorway count badge like "2d".</summary>
+        public string DoorCountBadge => $"{Prefab.OpenPortalCount}d";
+
+        /// <summary>Connection directions summary, e.g. "N+S" or "N+E+Down".</summary>
+        public string DirectionSummary => Prefab.ConnectionDirectionSummary;
+
+        /// <summary>True when this prefab is compatible with currently open portals.</summary>
+        public bool IsCompatible { get; set; }
+
+        /// <summary>Roof status for display: "Roofed", "Partial Roof", "No Roof".</summary>
+        public string RoofStatus {
+            get {
+                if (Prefab.HasNoRoof) return "No Roof";
+                if (Prefab.HasPartialRoof) return "Partial Roof";
+                return "";
+            }
+        }
+
+        public bool ShowRoofWarning => Prefab.HasNoRoof || Prefab.HasPartialRoof;
+
+        /// <summary>Color for the roof status indicator.</summary>
+        public IBrush RoofStatusBrush {
+            get {
+                if (Prefab.HasNoRoof) return new SolidColorBrush(Color.FromRgb(204, 102, 102));
+                if (Prefab.HasPartialRoof) return new SolidColorBrush(Color.FromRgb(189, 151, 77));
+                return new SolidColorBrush(Color.FromRgb(110, 192, 122));
+            }
+        }
+
+        /// <summary>Color for the compatible indicator.</summary>
+        public IBrush CompatibleBrush => IsCompatible
+            ? new SolidColorBrush(Color.FromRgb(110, 192, 122))
+            : new SolidColorBrush(Color.FromRgb(90, 74, 110));
+
+        /// <summary>Style tag (e.g. "Sewer", "Cave", "Crypt").</summary>
+        public string StyleTag => Prefab.Style;
+
+        /// <summary>Usage count formatted: "17k" or "342".</summary>
+        public string UsageText {
+            get {
+                var u = Prefab.UsageCount;
+                return u >= 1000 ? $"{u / 1000}k" : u.ToString();
+            }
+        }
 
         [ObservableProperty]
         private Avalonia.Media.Imaging.WriteableBitmap? _thumbnail;

@@ -17,8 +17,10 @@ namespace WorldBuilder.Editors.Dungeon {
                 c => (c.EnvId, c.CellStruct),
                 c => c.BoundsWidth * c.BoundsDepth);
 
-            foreach (var p in prefabs)
+            foreach (var p in prefabs) {
                 Name(p, boundsLookup);
+                ComputeOpenFaceDirections(p);
+            }
         }
 
         public static void Name(DungeonPrefab p, Dictionary<(ushort, ushort), float> boundsLookup) {
@@ -93,6 +95,9 @@ namespace WorldBuilder.Editors.Dungeon {
             if (!string.IsNullOrEmpty(heightTag)) p.Tags.Add(heightTag.ToLowerInvariant());
             if (!string.IsNullOrEmpty(p.SourceDungeonName))
                 p.Tags.Add(p.SourceDungeonName.ToLowerInvariant());
+            if (p.HasNoRoof) p.Tags.Add("no-roof");
+            else if (p.HasPartialRoof) p.Tags.Add("partial-roof");
+            else p.Tags.Add("roofed");
         }
 
         private static string ClassifyShape(DungeonPrefab p, int[] internalDegree, bool hasJunction, int openCount) {
@@ -124,6 +129,26 @@ namespace WorldBuilder.Editors.Dungeon {
             if (openCount == 0) return "Chamber";
 
             return openCount >= 3 ? "Branch" : "Passage";
+        }
+
+        /// <summary>
+        /// Compute cardinal direction labels for each open face in a prefab,
+        /// taking cell rotation into account so labels are in world space.
+        /// </summary>
+        public static void ComputeOpenFaceDirections(DungeonPrefab p) {
+            p.OpenFaceDirections.Clear();
+            foreach (var of in p.OpenFaces) {
+                var localNormal = new Vector3(of.NormalX, of.NormalY, of.NormalZ);
+                if (of.CellIndex < p.Cells.Count) {
+                    var cell = p.Cells[of.CellIndex];
+                    var rot = new Quaternion(cell.RotX, cell.RotY, cell.RotZ, cell.RotW);
+                    if (rot.LengthSquared() > 0.01f) {
+                        rot = Quaternion.Normalize(rot);
+                        localNormal = Vector3.Transform(localNormal, rot);
+                    }
+                }
+                p.OpenFaceDirections.Add(DungeonPrefab.ClassifyDirection(localNormal.X, localNormal.Y, localNormal.Z));
+            }
         }
 
         public static string InferStyle(string dungeonName) {

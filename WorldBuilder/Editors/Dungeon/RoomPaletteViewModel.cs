@@ -412,6 +412,8 @@ namespace WorldBuilder.Editors.Dungeon {
                     PrefabNamer.NameAll(kb.Prefabs, kb.Catalog);
                 }
 
+                AnalyzeRoofStatus(kb.Prefabs);
+
                 _allPrefabs = kb.Prefabs;
                 ApplyPrefabFilter();
                 Console.WriteLine($"[RoomPalette] Loaded {_allPrefabs.Count} prefab entries");
@@ -422,11 +424,64 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
+        /// <summary>
+        /// Analyze ceiling/roof status for each cell in each prefab by checking the actual
+        /// polygon normals in the DAT geometry.
+        /// </summary>
+        private void AnalyzeRoofStatus(List<DungeonPrefab> prefabs) {
+            int analyzed = 0, noRoof = 0, partial = 0;
+            foreach (var prefab in prefabs) {
+                bool anyMissing = false, allMissing = true;
+                foreach (var cell in prefab.Cells) {
+                    cell.HasCeiling = CellHasCeiling(cell.EnvId, cell.CellStruct);
+                    if (!cell.HasCeiling) anyMissing = true;
+                    else allMissing = false;
+                }
+                prefab.HasNoRoof = prefab.Cells.Count > 0 && allMissing;
+                prefab.HasPartialRoof = anyMissing && !allMissing;
+                prefab.HasFullRoof = !anyMissing;
+
+                if (prefab.HasNoRoof) noRoof++;
+                else if (prefab.HasPartialRoof) partial++;
+                analyzed++;
+            }
+            Console.WriteLine($"[RoomPalette] Roof analysis: {analyzed} prefabs — {noRoof} no-roof, {partial} partial-roof");
+        }
+
+        private bool CellHasCeiling(ushort envId, ushort cellStruct) {
+            try {
+                uint envFileId = (uint)(envId | 0x0D000000);
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) return true;
+                if (!env.Cells.TryGetValue(cellStruct, out var cs)) return true;
+                if (cs.VertexArray?.Vertices == null || cs.Polygons == null) return true;
+
+                var portalIds = cs.Portals != null ? new HashSet<ushort>(cs.Portals) : new HashSet<ushort>();
+
+                foreach (var kvp in cs.Polygons) {
+                    if (portalIds.Contains(kvp.Key)) continue;
+                    var poly = kvp.Value;
+                    if (poly.VertexIds.Count < 3) continue;
+
+                    var verts = cs.VertexArray.Vertices;
+                    if (!verts.TryGetValue((ushort)poly.VertexIds[0], out var v0) ||
+                        !verts.TryGetValue((ushort)poly.VertexIds[1], out var v1) ||
+                        !verts.TryGetValue((ushort)poly.VertexIds[2], out var v2)) continue;
+
+                    var edge1 = v1.Origin - v0.Origin;
+                    var edge2 = v2.Origin - v0.Origin;
+                    var normal = Vector3.Normalize(Vector3.Cross(edge1, edge2));
+
+                    if (normal.Z < -0.7f) return true;
+                }
+                return false;
+            }
+            catch { return true; }
+        }
+
         private void ApplyPrefabFilter() {
             var query = SearchText?.Trim() ?? "";
             var category = CatalogCategory;
 
-            // When we have open portals and a compatibility index, prioritize compatible prefabs
             HashSet<(ushort, ushort)>? compatibleRoomTypes = null;
             if (_activeOpenPortals.Count > 0 && PortalIndex != null) {
                 compatibleRoomTypes = PortalIndex.GetCompatibleRoomTypesForAny(_activeOpenPortals);
@@ -458,31 +513,36 @@ namespace WorldBuilder.Editors.Dungeon {
                     else others.Add(prefab);
                 }
 
-                foreach (var prefab in compatible.Take(100)) {
-                    var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
-                    entries.Add(new PrefabListEntry(prefab, name) {
-                        DetailOverride = $"\u2713 {prefab.Cells.Count} room{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")}"
-                    });
-                }
+                foreach (var prefab in compatible.Take(100))
+                    entries.Add(BuildPrefabEntry(prefab, isCompatible: true));
                 if (!ShowCompatibleOnly) {
-                    foreach (var prefab in others.Take(100)) {
-                        var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
-                        entries.Add(new PrefabListEntry(prefab, name) {
-                            DetailOverride = $"{prefab.Cells.Count} room{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")}"
-                        });
-                    }
+                    foreach (var prefab in others.Take(100))
+                        entries.Add(BuildPrefabEntry(prefab, isCompatible: false));
                 }
             }
             else {
-                foreach (var prefab in filtered.Take(200)) {
-                    var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
-                    entries.Add(new PrefabListEntry(prefab, name) {
-                        DetailOverride = $"{prefab.Cells.Count} room{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")}"
-                    });
-                }
+                foreach (var prefab in filtered.Take(200))
+                    entries.Add(BuildPrefabEntry(prefab, isCompatible: false));
             }
 
             PrefabEntries = new ObservableCollection<PrefabListEntry>(entries);
+        }
+
+        private static PrefabListEntry BuildPrefabEntry(DungeonPrefab prefab, bool isCompatible) {
+            var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
+
+            var cellWord = prefab.Cells.Count != 1 ? "cells" : "cell";
+            var doorWord = prefab.OpenFaces.Count != 1 ? "doors" : "door";
+            var dirSummary = prefab.ConnectionDirectionSummary;
+            var dirPart = !string.IsNullOrEmpty(dirSummary) ? $"  [{dirSummary}]" : "";
+            var compatMark = isCompatible ? "\u2713 " : "";
+
+            var detail = $"{compatMark}{prefab.Cells.Count} {cellWord}, {prefab.OpenFaces.Count} open {doorWord}{dirPart}";
+
+            return new PrefabListEntry(prefab, name) {
+                DetailOverride = detail,
+                IsCompatible = isCompatible
+            };
         }
 
         partial void OnSelectedPrefabChanged(PrefabListEntry? value) {
@@ -623,6 +683,8 @@ namespace WorldBuilder.Editors.Dungeon {
                     }
                 }
 
+                DrawOpenFaceArrows(pixels, size, prefab, scale, centerSX, centerSY);
+
                 var bitmap = new WriteableBitmap(new PixelSize(size, size), new Avalonia.Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888);
                 using (var fb = bitmap.Lock()) {
                     System.Runtime.InteropServices.Marshal.Copy(pixels, 0, fb.Address, Math.Min(pixels.Length, fb.RowBytes * size));
@@ -630,6 +692,72 @@ namespace WorldBuilder.Editors.Dungeon {
                 return bitmap;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Draw small arrow indicators at each open face portal centroid,
+        /// pointing outward in the portal normal direction. Helps users
+        /// visually see where connection points are on the thumbnail.
+        /// </summary>
+        private void DrawOpenFaceArrows(byte[] pixels, int size, DungeonPrefab prefab,
+            float scale, float centerSX, float centerSY) {
+            const float cosA = 0.866f;
+            const float sinA = 0.5f;
+            Vector2 ProjectIso(Vector3 p) => new Vector2((p.X - p.Y) * cosA, (p.X + p.Y) * sinA - p.Z);
+            int ToPixX(float sx) => Math.Clamp((int)((sx - centerSX) * scale + size * 0.5f), 0, size - 1);
+            int ToPixY(float sy) => Math.Clamp((int)((sy - centerSY) * scale + size * 0.5f), 0, size - 1);
+
+            foreach (var of in prefab.OpenFaces) {
+                if (of.CellIndex >= prefab.Cells.Count) continue;
+                var cell = prefab.Cells[of.CellIndex];
+
+                uint envFileId = (uint)(cell.EnvId | 0x0D000000);
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                if (!env.Cells.TryGetValue(cell.CellStruct, out var cs)) continue;
+                if (cs.VertexArray?.Vertices == null || cs.Polygons == null) continue;
+                if (!cs.Polygons.TryGetValue(of.PolyId, out var poly)) continue;
+
+                var cellRot = new Quaternion(cell.RotX, cell.RotY, cell.RotZ, cell.RotW);
+                if (cellRot.LengthSquared() < 0.01f) cellRot = Quaternion.Identity;
+                cellRot = Quaternion.Normalize(cellRot);
+                var cellOffset = new Vector3(cell.OffsetX, cell.OffsetY, cell.OffsetZ);
+
+                var centroid3d = Vector3.Zero;
+                int validCount = 0;
+                foreach (var vid in poly.VertexIds) {
+                    if (cs.VertexArray.Vertices.TryGetValue((ushort)vid, out var vtx)) {
+                        centroid3d += Vector3.Transform(vtx.Origin, cellRot) + cellOffset;
+                        validCount++;
+                    }
+                }
+                if (validCount == 0) continue;
+                centroid3d /= validCount;
+
+                var normal3d = new Vector3(of.NormalX, of.NormalY, of.NormalZ);
+                normal3d = Vector3.Transform(normal3d, cellRot);
+                if (normal3d.LengthSquared() > 0.01f) normal3d = Vector3.Normalize(normal3d);
+
+                var tip3d = centroid3d + normal3d * 2.5f;
+                var centroidS = ProjectIso(centroid3d);
+                var tipS = ProjectIso(tip3d);
+
+                int cx = ToPixX(centroidS.X), cy = ToPixY(centroidS.Y);
+                int tx = ToPixX(tipS.X), ty = ToPixY(tipS.Y);
+
+                DrawLine(pixels, size, cx, cy, tx, ty, 255, 200, 80);
+
+                float dx = tx - cx, dy = ty - cy;
+                float len = MathF.Sqrt(dx * dx + dy * dy);
+                if (len > 2f) {
+                    dx /= len; dy /= len;
+                    int a1x = tx - (int)(dx * 4 + dy * 3);
+                    int a1y = ty - (int)(dy * 4 - dx * 3);
+                    int a2x = tx - (int)(dx * 4 - dy * 3);
+                    int a2y = ty - (int)(dy * 4 + dx * 3);
+                    DrawLine(pixels, size, tx, ty, a1x, a1y, 255, 200, 80);
+                    DrawLine(pixels, size, tx, ty, a2x, a2y, 255, 200, 80);
+                }
+            }
         }
 
         private async Task GenerateThumbnailsAsync() {
