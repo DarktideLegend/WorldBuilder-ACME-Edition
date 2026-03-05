@@ -78,6 +78,12 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty]
         private Avalonia.Media.Imaging.WriteableBitmap? _thumbnail;
 
+        [ObservableProperty]
+        private bool _isFavorite;
+
+        /// <summary>True when this is a user-created custom prefab (from "Save Selection as Prefab").</summary>
+        public bool IsCustom => Prefab.Signature.StartsWith("custom_");
+
         public PrefabListEntry(DungeonPrefab prefab, string displayName) {
             Prefab = prefab;
             DisplayName = displayName;

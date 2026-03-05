@@ -99,6 +99,11 @@ namespace WorldBuilder.Editors.Dungeon {
         /// <summary>Index of the open portal nearest to the mouse during placement. -1 = none.</summary>
         public int NearestOpenPortalIndex { get; set; } = -1;
 
+        /// <summary>Cell number of the portal currently being targeted for snap placement. 0 = none.</summary>
+        public ushort HighlightedPortalCellNum { get; set; }
+        /// <summary>Polygon ID of the portal currently being targeted for snap placement. 0 = none.</summary>
+        public ushort HighlightedPortalPolyId { get; set; }
+
         /// <summary>True when the editor is in placement mode (show portal highlights prominently).</summary>
         public bool IsInPlacementMode { get; set; }
 
@@ -137,6 +142,9 @@ namespace WorldBuilder.Editors.Dungeon {
         private readonly List<Vector3> _portalWorldVerts = new();
         private readonly List<Matrix4x4> _partTransformsBuffer = new();
         private readonly List<float> _allOpenPortalVerts = new();
+        private readonly List<float> _highlightedPortalVerts = new();
+        private uint _highlightVAO;
+        private uint _highlightVBO;
 
         private ushort _loadedLandblockKey;
         private bool _hasLoadedCells;
@@ -907,17 +915,25 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_sceneContext == null || OpenPortalIndicators.Count == 0) return;
 
             _allOpenPortalVerts.Clear();
+            _highlightedPortalVerts.Clear();
             var camPos = Camera.Position;
             float lineWidth = IsInPlacementMode ? 0.25f : 0.15f;
+            float highlightWidth = 0.4f;
+            bool hasHighlight = HighlightedPortalCellNum != 0 || HighlightedPortalPolyId != 0;
 
             for (int i = 0; i < OpenPortalIndicators.Count; i++) {
                 var indicator = OpenPortalIndicators[i];
                 if (indicator.WorldVertices == null || indicator.WorldVertices.Length < 3) continue;
 
+                bool isHighlighted = hasHighlight
+                    && indicator.CellNum == HighlightedPortalCellNum
+                    && indicator.PolyId == HighlightedPortalPolyId;
+                var targetVerts = isHighlighted ? _highlightedPortalVerts : _allOpenPortalVerts;
+                float w = isHighlighted ? highlightWidth : lineWidth;
+
                 var normal = Vector3.Normalize(indicator.Normal);
                 var offset = normal * 0.1f;
 
-                // Draw outline edges of the portal polygon as camera-facing strips
                 for (int v = 0; v < indicator.WorldVertices.Length; v++) {
                     int next = (v + 1) % indicator.WorldVertices.Length;
                     var a = indicator.WorldVertices[v] + offset;
@@ -926,56 +942,98 @@ namespace WorldBuilder.Editors.Dungeon {
                     var edgeDir = Vector3.Normalize(b - a);
                     var mid = (a + b) * 0.5f;
                     var toCamera = Vector3.Normalize(camPos - mid);
-                    var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * lineWidth;
+                    var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * w;
                     var n = toCamera;
 
                     void PV(Vector3 p) {
-                        _allOpenPortalVerts.Add(p.X); _allOpenPortalVerts.Add(p.Y); _allOpenPortalVerts.Add(p.Z);
-                        _allOpenPortalVerts.Add(n.X); _allOpenPortalVerts.Add(n.Y); _allOpenPortalVerts.Add(n.Z);
+                        targetVerts.Add(p.X); targetVerts.Add(p.Y); targetVerts.Add(p.Z);
+                        targetVerts.Add(n.X); targetVerts.Add(n.Y); targetVerts.Add(n.Z);
                     }
                     PV(a - sideDir); PV(b - sideDir); PV(b + sideDir);
                     PV(a - sideDir); PV(b + sideDir); PV(a + sideDir);
                 }
             }
 
-            if (_allOpenPortalVerts.Count == 0) return;
-            int vertCount = _allOpenPortalVerts.Count / 6;
-            var data = CollectionsMarshal.AsSpan(_allOpenPortalVerts);
-
-            if (_allOpenVAO == 0) {
-                gl.GenVertexArrays(1, out _allOpenVAO);
-                gl.GenBuffers(1, out _allOpenVBO);
-            }
-
-            gl.BindVertexArray(_allOpenVAO);
-            gl.BindBuffer(GLEnum.ArrayBuffer, _allOpenVBO);
-            fixed (float* ptr = data) {
-                gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
-            }
-            gl.EnableVertexAttribArray(0);
-            gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
-            gl.EnableVertexAttribArray(1);
-            gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-            for (uint a = 2; a < 8; a++) gl.DisableVertexAttribArray(a);
-            gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
-
             var shader = _sceneContext.SphereShader;
-            shader.Bind();
-            shader.SetUniform("uViewProjection", viewProjection);
-            shader.SetUniform("uCameraPosition", camPos);
-            shader.SetUniform("uSphereColor", IsInPlacementMode ? new Vector3(0.2f, 1.0f, 0.4f) : new Vector3(0.15f, 0.7f, 0.25f));
-            shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
-            shader.SetUniform("uAmbientIntensity", 1.0f);
-            shader.SetUniform("uSpecularPower", 0f);
-            shader.SetUniform("uGlowColor", new Vector3(0f, 0f, 0f));
-            shader.SetUniform("uGlowIntensity", 0f);
-            shader.SetUniform("uGlowPower", 1.0f);
 
-            gl.Disable(EnableCap.DepthTest);
-            gl.Disable(EnableCap.CullFace);
-            gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
-            gl.Enable(EnableCap.DepthTest);
-            gl.Enable(EnableCap.CullFace);
+            // Draw non-highlighted portals
+            if (_allOpenPortalVerts.Count > 0) {
+                int vertCount = _allOpenPortalVerts.Count / 6;
+                var data = CollectionsMarshal.AsSpan(_allOpenPortalVerts);
+
+                if (_allOpenVAO == 0) {
+                    gl.GenVertexArrays(1, out _allOpenVAO);
+                    gl.GenBuffers(1, out _allOpenVBO);
+                }
+
+                gl.BindVertexArray(_allOpenVAO);
+                gl.BindBuffer(GLEnum.ArrayBuffer, _allOpenVBO);
+                fixed (float* ptr = data) {
+                    gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+                }
+                gl.EnableVertexAttribArray(0);
+                gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+                gl.EnableVertexAttribArray(1);
+                gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+                for (uint a = 2; a < 8; a++) gl.DisableVertexAttribArray(a);
+                gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+                shader.Bind();
+                shader.SetUniform("uViewProjection", viewProjection);
+                shader.SetUniform("uCameraPosition", camPos);
+                shader.SetUniform("uSphereColor", IsInPlacementMode ? new Vector3(0.2f, 1.0f, 0.4f) : new Vector3(0.15f, 0.7f, 0.25f));
+                shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+                shader.SetUniform("uAmbientIntensity", 1.0f);
+                shader.SetUniform("uSpecularPower", 0f);
+                shader.SetUniform("uGlowColor", new Vector3(0f, 0f, 0f));
+                shader.SetUniform("uGlowIntensity", 0f);
+                shader.SetUniform("uGlowPower", 1.0f);
+
+                gl.Disable(EnableCap.DepthTest);
+                gl.Disable(EnableCap.CullFace);
+                gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
+                gl.Enable(EnableCap.DepthTest);
+                gl.Enable(EnableCap.CullFace);
+            }
+
+            // Draw highlighted target portal with bright distinct color
+            if (_highlightedPortalVerts.Count > 0) {
+                int hVertCount = _highlightedPortalVerts.Count / 6;
+                var hData = CollectionsMarshal.AsSpan(_highlightedPortalVerts);
+
+                if (_highlightVAO == 0) {
+                    gl.GenVertexArrays(1, out _highlightVAO);
+                    gl.GenBuffers(1, out _highlightVBO);
+                }
+
+                gl.BindVertexArray(_highlightVAO);
+                gl.BindBuffer(GLEnum.ArrayBuffer, _highlightVBO);
+                fixed (float* ptr = hData) {
+                    gl.BufferData(GLEnum.ArrayBuffer, (nuint)(hData.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+                }
+                gl.EnableVertexAttribArray(0);
+                gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+                gl.EnableVertexAttribArray(1);
+                gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+                for (uint a = 2; a < 8; a++) gl.DisableVertexAttribArray(a);
+                gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+                shader.Bind();
+                shader.SetUniform("uViewProjection", viewProjection);
+                shader.SetUniform("uCameraPosition", camPos);
+                shader.SetUniform("uSphereColor", new Vector3(1.0f, 0.9f, 0.2f));
+                shader.SetUniform("uGlowColor", new Vector3(0.6f, 0.5f, 0f));
+                shader.SetUniform("uGlowIntensity", 0.5f);
+                shader.SetUniform("uAmbientIntensity", 1.0f);
+                shader.SetUniform("uSpecularPower", 0f);
+                shader.SetUniform("uGlowPower", 1.0f);
+
+                gl.Disable(EnableCap.DepthTest);
+                gl.Disable(EnableCap.CullFace);
+                gl.DrawArrays(GLEnum.Triangles, 0, (uint)hVertCount);
+                gl.Enable(EnableCap.DepthTest);
+                gl.Enable(EnableCap.CullFace);
+            }
 
             gl.BindVertexArray(0);
             gl.UseProgram(0);
@@ -1057,7 +1115,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private unsafe void RenderConnectionLines(GL gl, Matrix4x4 viewProjection) {
             if (_sceneContext == null || ConnectionLines == null || ConnectionLines.Count == 0) return;
 
-            const float lineWidth = 0.08f;
+            const float lineWidth = 0.35f;
             var camPos = Camera.Position;
             _connLineVerts.Clear();
 
@@ -1102,12 +1160,12 @@ namespace WorldBuilder.Editors.Dungeon {
             shader.Bind();
             shader.SetUniform("uViewProjection", viewProjection);
             shader.SetUniform("uCameraPosition", camPos);
-            shader.SetUniform("uSphereColor", new Vector3(0.4f, 0.6f, 1.0f));
+            shader.SetUniform("uSphereColor", new Vector3(0.3f, 0.6f, 1.0f));
             shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
             shader.SetUniform("uAmbientIntensity", 1.0f);
             shader.SetUniform("uSpecularPower", 0f);
-            shader.SetUniform("uGlowColor", new Vector3(0f, 0f, 0f));
-            shader.SetUniform("uGlowIntensity", 0f);
+            shader.SetUniform("uGlowColor", new Vector3(0.1f, 0.3f, 0.6f));
+            shader.SetUniform("uGlowIntensity", 0.4f);
             shader.SetUniform("uGlowPower", 1.0f);
 
             gl.Disable(EnableCap.DepthTest);
@@ -1313,6 +1371,8 @@ namespace WorldBuilder.Editors.Dungeon {
                 if (_portalOpenVAO != 0) gl.DeleteVertexArray(_portalOpenVAO);
                 if (_allOpenVBO != 0) gl.DeleteBuffer(_allOpenVBO);
                 if (_allOpenVAO != 0) gl.DeleteVertexArray(_allOpenVAO);
+                if (_highlightVBO != 0) gl.DeleteBuffer(_highlightVBO);
+                if (_highlightVAO != 0) gl.DeleteVertexArray(_highlightVAO);
                 if (_connPortalVBO != 0) gl.DeleteBuffer(_connPortalVBO);
                 if (_connPortalVAO != 0) gl.DeleteVertexArray(_connPortalVAO);
             }

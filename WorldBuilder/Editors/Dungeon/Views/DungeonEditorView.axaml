@@ -197,7 +197,7 @@
                         <StackPanel Spacing="2" HorizontalAlignment="Center">
                             <TextBlock Text="{Binding PlacementStatusText}" FontSize="14" FontWeight="SemiBold"
                                        Foreground="#4dbdbd" HorizontalAlignment="Center" />
-                            <TextBlock Text="Click near a green doorway to attach  |  Escape to cancel"
+                            <TextBlock Text="Click to place at the highlighted doorway  |  Escape to cancel"
                                        FontSize="11" Foreground="#6a8a8a" HorizontalAlignment="Center" />
                         </StackPanel>
                     </Border>

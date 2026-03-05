@@ -354,7 +354,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 .OrderBy(s => s);
             styles.AddRange(seenStyles);
 
-            var roomCount = new NumericUpDown { Value = 10, Minimum = 3, Maximum = 80, Width = 100, FontSize = 12 };
+            var roomCount = new NumericUpDown { Value = 10, Minimum = 3, Maximum = 50, Width = 100, FontSize = 12 };
             var styleCombo = new ComboBox {
                 FontSize = 12, Width = 150,
                 ItemsSource = styles,
@@ -370,8 +370,8 @@ namespace WorldBuilder.Editors.Dungeon {
                 Margin = new Thickness(0, 0, 0, 4)
             });
             panel.Children.Add(new TextBlock {
-                Text = $"Builds a new dungeon room-by-room using {kb.TotalEdges:N0} proven connections from {kb.DungeonsScanned:N0} real dungeons. " +
-                       "Each room-to-room link uses portal pairings that exist in the original game data.",
+                Text = $"Builds a new dungeon by chaining multi-cell pieces using {kb.TotalEdges:N0} proven connections from {kb.DungeonsScanned:N0} real dungeons. " +
+                       "Each piece is 2-5 cells with correct internal geometry. Connection points use portal transforms from original game data.",
                 FontSize = 11, Foreground = new SolidColorBrush(Color.Parse("#8a7a9e")),
                 TextWrapping = TextWrapping.Wrap, MaxWidth = 350,
                 Margin = new Thickness(0, 0, 0, 4)
@@ -388,9 +388,26 @@ namespace WorldBuilder.Editors.Dungeon {
                 panel.Children.Add(row);
             }
 
-            AddRow("Room Count:", roomCount);
+            var requireRoofCheck = new CheckBox {
+                Content = "Only use roofed pieces", IsChecked = true, FontSize = 11,
+                Foreground = new SolidColorBrush(Color.Parse("#c0b0d8"))
+            };
+            var lockStyleCheck = new CheckBox {
+                Content = "Keep consistent style", IsChecked = true, FontSize = 11,
+                Foreground = new SolidColorBrush(Color.Parse("#c0b0d8"))
+            };
+            var allowVerticalCheck = new CheckBox {
+                Content = "Allow vertical connections (ramps/stairs)", IsChecked = false, FontSize = 11,
+                Foreground = new SolidColorBrush(Color.Parse("#c0b0d8"))
+            };
+
+            AddRow("Rooms:", roomCount);
             AddRow("Style:", styleCombo);
             AddRow("Seed:", seedBox);
+            panel.Children.Add(new Border { Height = 4 });
+            panel.Children.Add(requireRoofCheck);
+            panel.Children.Add(lockStyleCheck);
+            panel.Children.Add(allowVerticalCheck);
 
             var btnRow = new StackPanel {
                 Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8,
@@ -403,9 +420,12 @@ namespace WorldBuilder.Editors.Dungeon {
             genBtn.Click += (s, e) => {
                 int.TryParse(seedBox.Text, out var seed);
                 result = new GeneratorParams {
-                    RoomCount = (int)(roomCount.Value ?? 10),
+                    PrefabCount = (int)(roomCount.Value ?? 10),
                     Style = styleCombo.SelectedItem as string ?? "All",
                     Seed = seed,
+                    RequireRoof = requireRoofCheck.IsChecked == true,
+                    AllowVertical = allowVerticalCheck.IsChecked == true,
+                    LockStyle = lockStyleCheck.IsChecked == true,
                 };
                 DialogHost.Close("DungeonDialogHost");
             };

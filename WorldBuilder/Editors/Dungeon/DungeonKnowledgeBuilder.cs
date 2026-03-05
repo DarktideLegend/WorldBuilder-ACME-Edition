@@ -18,11 +18,30 @@ namespace WorldBuilder.Editors.Dungeon {
             try {
                 if (!File.Exists(KnowledgePath)) return null;
                 var json = File.ReadAllText(KnowledgePath);
-                return JsonSerializer.Deserialize<DungeonKnowledgeBase>(json, new JsonSerializerOptions {
+                var kb = JsonSerializer.Deserialize<DungeonKnowledgeBase>(json, new JsonSerializerOptions {
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                 });
+                if (kb != null && kb.Version < DungeonKnowledgeBase.CurrentVersion) {
+                    Console.WriteLine($"[DungeonKnowledge] Stale knowledge base (v{kb.Version}, need v{DungeonKnowledgeBase.CurrentVersion}) — deleting for rebuild");
+                    try { File.Delete(KnowledgePath); } catch { }
+                    return null;
+                }
+                return kb;
             }
             catch { return null; }
+        }
+
+        /// <summary>True if the cached KB exists and is up to date.</summary>
+        public static bool IsCachedValid() {
+            try {
+                if (!File.Exists(KnowledgePath)) return false;
+                var json = File.ReadAllText(KnowledgePath);
+                var kb = JsonSerializer.Deserialize<DungeonKnowledgeBase>(json, new JsonSerializerOptions {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                });
+                return kb != null && kb.Version >= DungeonKnowledgeBase.CurrentVersion && kb.Prefabs.Count >= 100;
+            }
+            catch { return false; }
         }
 
         public static void Save(DungeonKnowledgeBase kb) {
@@ -125,6 +144,7 @@ namespace WorldBuilder.Editors.Dungeon {
             Console.WriteLine($"[DungeonKnowledge] Done: {dungeonsScanned} dungeons, {edges.Count} edges, {uniquePrefabs.Count} prefabs, {catalog.Count} catalog rooms");
 
             var kb = new DungeonKnowledgeBase {
+                Version = DungeonKnowledgeBase.CurrentVersion,
                 AnalyzedAt = DateTime.UtcNow,
                 DungeonsScanned = dungeonsScanned,
                 TotalEdges = edges.Count,
@@ -224,8 +244,9 @@ namespace WorldBuilder.Editors.Dungeon {
                         : $"{envB:X4}_{csB}_{portal.OtherPortalId:X4}->{envA:X4}_{csA}_{portal.PolygonId:X4}";
 
                     if (!edgeCounts.TryGetValue(key, out var existing)) {
-                        var relOffset = otherCell.Position.Origin - cell.Position.Origin;
-                        var relRot = Quaternion.Normalize(Quaternion.Conjugate(cell.Position.Orientation) * otherCell.Position.Orientation);
+                        var invCellRot = Quaternion.Conjugate(cell.Position.Orientation);
+                        var relOffset = Vector3.Transform(otherCell.Position.Origin - cell.Position.Origin, invCellRot);
+                        var relRot = Quaternion.Normalize(invCellRot * otherCell.Position.Orientation);
                         existing = (new AdjacencyEdge {
                             EnvIdA = envA, CellStructA = csA, PolyIdA = (ushort)portal.PolygonId,
                             EnvIdB = envB, CellStructB = csB, PolyIdB = (ushort)portal.OtherPortalId,

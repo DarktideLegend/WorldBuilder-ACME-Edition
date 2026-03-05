@@ -233,6 +233,12 @@ namespace WorldBuilder.Editors.Dungeon {
             var result = new List<(Vector3 From, Vector3 To)>();
             if (document == null || dats == null || document.Cells.Count == 0) return result;
 
+            int totalPortals = document.Cells.Sum(c => c.CellPortals.Count);
+            if (totalPortals == 0) {
+                Console.WriteLine($"[ConnectionLines] No portal data in document ({document.Cells.Count} cells, 0 portals)");
+                return result;
+            }
+
             uint lbId = document.LandblockKey;
             var blockX = (lbId >> 8) & 0xFF;
             var blockY = lbId & 0xFF;
@@ -277,6 +283,28 @@ namespace WorldBuilder.Editors.Dungeon {
 
                     result.Add((centroidA, centroidB));
                 }
+            }
+
+            if (result.Count == 0 && totalPortals > 0) {
+                int backPortalMissing = 0, geomMissing = 0;
+                foreach (var cell in document.Cells) {
+                    foreach (var cp in cell.CellPortals) {
+                        if (cp.OtherCellId == 0 || cp.OtherCellId == 0xFFFF) continue;
+                        var otherCell = document.GetCell(cp.OtherCellId);
+                        if (otherCell == null) continue;
+                        var back = otherCell.CellPortals.FirstOrDefault(p => p.OtherCellId == cell.CellNumber);
+                        if (back == null) { backPortalMissing++; continue; }
+                        uint ef = (uint)(cell.EnvironmentId | 0x0D000000);
+                        if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(ef, out var env) ||
+                            !env.Cells.TryGetValue(cell.CellStructure, out var cs)) { geomMissing++; continue; }
+                        var geom = PortalSnapper.GetPortalGeometry(cs, cp.PolygonId);
+                        if (geom == null) geomMissing++;
+                    }
+                }
+                Console.WriteLine($"[ConnectionLines] 0 lines despite {totalPortals} portals — backPortalMissing={backPortalMissing}, geomMissing={geomMissing}");
+            }
+            else if (result.Count > 0) {
+                Console.WriteLine($"[ConnectionLines] Computed {result.Count} connection lines from {totalPortals} portals");
             }
 
             return result;

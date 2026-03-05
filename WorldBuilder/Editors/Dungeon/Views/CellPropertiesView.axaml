@@ -27,6 +27,9 @@
             <Button Classes="dng-toolbar-btn" Content="&#9733; Favorite This Room" Command="{Binding FavoriteSelectedRoomCommand}"
                     Foreground="#e8c84d" FontSize="10" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
                     ToolTip.Tip="Add this room type to your favorites list" />
+            <Button Classes="dng-toolbar-btn" Content="&#9733; Save Selection as Piece" Command="{Binding SaveSelectionAsPrefabCommand}"
+                    Foreground="#c8a832" FontSize="10" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                    ToolTip.Tip="Save the selected room(s) as a reusable favorite piece you can place in new dungeons" />
 
             <TextBlock Text="Location" FontSize="11" Foreground="#8a7a9e" Margin="0,4,0,0" />
             <TextBox Text="{Binding SelectedCellTeleportCommand}" FontSize="9" FontFamily="Consolas" IsReadOnly="True" TextWrapping="Wrap" Padding="4,3" Background="#16102a" BorderBrush="#2a1d42" />

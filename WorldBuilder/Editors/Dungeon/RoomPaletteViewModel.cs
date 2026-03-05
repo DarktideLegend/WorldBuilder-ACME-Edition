@@ -74,13 +74,13 @@ namespace WorldBuilder.Editors.Dungeon {
         private bool _showCatalogMode = true;
 
         partial void OnShowStarterModeChanged(bool value) {
-            if (value) { ShowCatalogMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false; }
+            if (value) { ShowCatalogMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false; ShowFavoritePrefabsMode = false; }
         }
         partial void OnShowFavoritesModeChanged(bool value) {
-            if (value) { ShowCatalogMode = false; ShowStarterMode = false; ShowPrefabsMode = false; }
+            if (value) { ShowCatalogMode = false; ShowStarterMode = false; ShowPrefabsMode = false; ShowFavoritePrefabsMode = false; }
         }
         partial void OnShowPrefabsModeChanged(bool value) {
-            if (value) { ShowCatalogMode = false; ShowStarterMode = false; ShowFavoritesMode = false; }
+            if (value) { ShowCatalogMode = false; ShowStarterMode = false; ShowFavoritesMode = false; ShowFavoritePrefabsMode = false; }
         }
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(RoomsToShow))]
@@ -97,7 +97,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private PrefabListEntry? _selectedPrefab;
 
         /// <summary>True when the catalog (prefab) list should be shown instead of the room list.</summary>
-        public bool ShowPrefabList => (ShowCatalogMode && PrefabEntries.Count > 0) || (ShowPrefabsMode && PrefabEntries.Count > 0);
+        public bool ShowPrefabList => (ShowCatalogMode && PrefabEntries.Count > 0) || (ShowPrefabsMode && PrefabEntries.Count > 0) || ShowFavoritePrefabsMode;
 
         public event EventHandler<DungeonPrefab>? PrefabSelected;
         public event EventHandler<DungeonPrefab?>? PrefabHoverChanged;
@@ -118,6 +118,7 @@ namespace WorldBuilder.Editors.Dungeon {
         public IEnumerable<RoomEntry> RoomsToShow =>
             ShowCatalogMode ? Enumerable.Empty<RoomEntry>() :
             ShowPrefabsMode ? Enumerable.Empty<RoomEntry>() :
+            ShowFavoritePrefabsMode ? Enumerable.Empty<RoomEntry>() :
             ShowFavoritesMode && FavoriteRooms.Count > 0 ? FavoriteRooms :
             ShowStarterMode && StarterRooms.Count > 0 ? StarterRooms :
             FilteredRooms;
@@ -218,11 +219,7 @@ namespace WorldBuilder.Editors.Dungeon {
                     Console.WriteLine($"[RoomPalette] Auto-analysis complete: {report.TotalCellsScanned} cells, {report.UniqueRoomTypes} room types");
                 }
 
-                bool needsKbRebuild = !File.Exists(kbPath);
-                if (!needsKbRebuild) {
-                    var existingKb = DungeonKnowledgeBuilder.LoadCached();
-                    needsKbRebuild = existingKb == null || existingKb.Prefabs.Count < 100;
-                }
+                bool needsKbRebuild = !DungeonKnowledgeBuilder.IsCachedValid();
                 if (needsKbRebuild) {
                     Console.WriteLine("[RoomPalette] Building knowledge base (expanded prefabs)...");
                     await Dispatcher.UIThread.InvokeAsync(() => {
@@ -381,7 +378,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
         partial void OnShowCatalogModeChanged(bool value) {
             if (value) {
-                ShowStarterMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false;
+                ShowStarterMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false; ShowFavoritePrefabsMode = false;
                 ApplyPrefabFilter();
                 _ = GeneratePrefabThumbnailsAsync();
             }
@@ -400,13 +397,56 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         private List<DungeonPrefab> _allPrefabs = new();
+        private readonly HashSet<string> _favoritePrefabSignatures = new();
+        private List<DungeonPrefab> _customPrefabs = new();
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        [NotifyPropertyChangedFor(nameof(ShowPrefabList))]
+        private bool _showFavoritePrefabsMode;
+
+        partial void OnShowFavoritePrefabsModeChanged(bool value) {
+            if (value) {
+                ShowCatalogMode = false; ShowStarterMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false;
+                ApplyPrefabFilter();
+                _ = GeneratePrefabThumbnailsAsync();
+            }
+        }
+
+        public bool IsPrefabFavorite(DungeonPrefab prefab) =>
+            _favoritePrefabSignatures.Contains(prefab.Signature);
+
+        public void TogglePrefabFavorite(PrefabListEntry entry) {
+            var sig = entry.Prefab.Signature;
+            if (_favoritePrefabSignatures.Contains(sig)) {
+                _favoritePrefabSignatures.Remove(sig);
+                entry.IsFavorite = false;
+                Console.WriteLine($"[RoomPalette] Unfavorited prefab: {entry.DisplayName} (sig={sig.Substring(0, Math.Min(30, sig.Length))}...)");
+            }
+            else {
+                _favoritePrefabSignatures.Add(sig);
+                entry.IsFavorite = true;
+                Console.WriteLine($"[RoomPalette] Favorited prefab: {entry.DisplayName} (sig={sig.Substring(0, Math.Min(30, sig.Length))}...) — total favorites: {_favoritePrefabSignatures.Count}");
+            }
+            SavePrefabFavorites();
+            ApplyPrefabFilter();
+        }
+
+        public void AddCustomPrefab(DungeonPrefab prefab) {
+            _customPrefabs.Add(prefab);
+            _allPrefabs.Add(prefab);
+            _favoritePrefabSignatures.Add(prefab.Signature);
+            SaveCustomPrefabs();
+            SavePrefabFavorites();
+            ApplyPrefabFilter();
+            _ = GeneratePrefabThumbnailsAsync();
+        }
 
         public void LoadPrefabEntries() {
             try {
                 var kb = DungeonKnowledgeBuilder.LoadCached();
                 if (kb == null || kb.Prefabs.Count == 0) return;
 
-                // Name prefabs if the cached KB predates the naming system
                 if (kb.Prefabs.Any(p => string.IsNullOrEmpty(p.DisplayName))) {
                     Console.WriteLine($"[RoomPalette] Naming {kb.Prefabs.Count} prefabs from cached KB...");
                     PrefabNamer.NameAll(kb.Prefabs, kb.Catalog);
@@ -414,9 +454,17 @@ namespace WorldBuilder.Editors.Dungeon {
 
                 AnalyzeRoofStatus(kb.Prefabs);
 
-                _allPrefabs = kb.Prefabs;
+                _allPrefabs = new List<DungeonPrefab>(kb.Prefabs);
+
+                LoadCustomPrefabs();
+                foreach (var cp in _customPrefabs) {
+                    if (!_allPrefabs.Any(p => p.Signature == cp.Signature))
+                        _allPrefabs.Add(cp);
+                }
+
+                LoadPrefabFavorites();
                 ApplyPrefabFilter();
-                Console.WriteLine($"[RoomPalette] Loaded {_allPrefabs.Count} prefab entries");
+                Console.WriteLine($"[RoomPalette] Loaded {_allPrefabs.Count} prefab entries ({_customPrefabs.Count} custom, {_favoritePrefabSignatures.Count} favorites)");
                 _ = GeneratePrefabThumbnailsAsync();
             }
             catch (Exception ex) {
@@ -487,9 +535,15 @@ namespace WorldBuilder.Editors.Dungeon {
                 compatibleRoomTypes = PortalIndex.GetCompatibleRoomTypesForAny(_activeOpenPortals);
             }
 
-            var filtered = _allPrefabs.AsEnumerable();
+            IEnumerable<DungeonPrefab> filtered;
+            if (ShowFavoritePrefabsMode) {
+                filtered = _allPrefabs.Where(p => _favoritePrefabSignatures.Contains(p.Signature));
+            }
+            else {
+                filtered = _allPrefabs.AsEnumerable();
+            }
 
-            if (category != "All") {
+            if (category != "All" && !ShowFavoritePrefabsMode) {
                 filtered = filtered.Where(p => p.Category.Equals(category, StringComparison.OrdinalIgnoreCase));
             }
 
@@ -503,7 +557,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             var entries = new List<PrefabListEntry>();
 
-            if (compatibleRoomTypes != null && compatibleRoomTypes.Count > 0) {
+            if (compatibleRoomTypes != null && compatibleRoomTypes.Count > 0 && !ShowFavoritePrefabsMode) {
                 var compatible = new List<DungeonPrefab>();
                 var others = new List<DungeonPrefab>();
                 foreach (var prefab in filtered) {
@@ -524,6 +578,10 @@ namespace WorldBuilder.Editors.Dungeon {
                 foreach (var prefab in filtered.Take(200))
                     entries.Add(BuildPrefabEntry(prefab, isCompatible: false));
             }
+
+            // Apply favorite state to entries
+            foreach (var entry in entries)
+                entry.IsFavorite = _favoritePrefabSignatures.Contains(entry.Prefab.Signature);
 
             PrefabEntries = new ObservableCollection<PrefabListEntry>(entries);
         }
@@ -1073,7 +1131,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
         partial void OnSearchTextChanged(string value) {
             ApplyFilter();
-            if (ShowCatalogMode || ShowPrefabsMode) ApplyPrefabFilter();
+            if (ShowCatalogMode || ShowPrefabsMode || ShowFavoritePrefabsMode) ApplyPrefabFilter();
         }
         partial void OnMinPortalsChanged(int value) => ApplyFilter();
         partial void OnMaxPortalsChanged(int value) => ApplyFilter();
@@ -1174,6 +1232,80 @@ namespace WorldBuilder.Editors.Dungeon {
                 room.IsFavorite = _favoriteKeys.Contains(key);
                 if (room.IsFavorite)
                     FavoriteRooms.Add(room);
+            }
+        }
+
+        private void LoadPrefabFavorites() {
+            try {
+                var path = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "dungeon_prefab_favorites.json");
+                if (!File.Exists(path)) return;
+
+                var json = File.ReadAllText(path);
+                using var doc = JsonDocument.Parse(json);
+                foreach (var item in doc.RootElement.EnumerateArray()) {
+                    var sig = item.GetString();
+                    if (!string.IsNullOrEmpty(sig))
+                        _favoritePrefabSignatures.Add(sig);
+                }
+                Console.WriteLine($"[RoomPalette] Loaded {_favoritePrefabSignatures.Count} prefab favorites");
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] LoadPrefabFavorites: {ex.Message}");
+            }
+        }
+
+        private void SavePrefabFavorites() {
+            try {
+                var path = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "dungeon_prefab_favorites.json");
+                var dir = Path.GetDirectoryName(path);
+                if (dir != null) Directory.CreateDirectory(dir);
+
+                var json = JsonSerializer.Serialize(_favoritePrefabSignatures.ToList());
+                File.WriteAllText(path, json);
+                Console.WriteLine($"[RoomPalette] Saved {_favoritePrefabSignatures.Count} prefab favorites");
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] SavePrefabFavorites: {ex.Message}");
+            }
+        }
+
+        private void LoadCustomPrefabs() {
+            try {
+                var path = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "dungeon_custom_prefabs.json");
+                if (!File.Exists(path)) return;
+
+                var json = File.ReadAllText(path);
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var prefabs = JsonSerializer.Deserialize<List<DungeonPrefab>>(json, options);
+                if (prefabs != null) {
+                    _customPrefabs = prefabs;
+                    Console.WriteLine($"[RoomPalette] Loaded {_customPrefabs.Count} custom prefabs");
+                }
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] LoadCustomPrefabs: {ex.Message}");
+            }
+        }
+
+        private void SaveCustomPrefabs() {
+            try {
+                var path = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "dungeon_custom_prefabs.json");
+                var dir = Path.GetDirectoryName(path);
+                if (dir != null) Directory.CreateDirectory(dir);
+
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                File.WriteAllText(path, JsonSerializer.Serialize(_customPrefabs, options));
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] SaveCustomPrefabs: {ex.Message}");
             }
         }
 

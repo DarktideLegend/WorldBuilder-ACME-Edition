@@ -248,7 +248,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
         public List<(string Label, Action Action, bool IsEnabled)> GetCellContextMenuItems(
             Vector3 rayOrigin, Vector3 rayDir,
-            Action deleteAction, Action favoriteAction) {
+            Action deleteAction, Action favoriteAction, Action? saveAsPrefabAction = null) {
             var items = new List<(string Label, Action Action, bool IsEnabled)>();
             var dats = _getDats();
             var palette = _getPalette();
@@ -298,6 +298,13 @@ namespace WorldBuilder.Editors.Dungeon {
 
             items.Add(("Delete Room", deleteAction, true));
             items.Add(("Favorite This Room", favoriteAction, true));
+            if (saveAsPrefabAction != null) {
+                var selCount = _selection.SelectedCells.Count;
+                var label = selCount > 1
+                    ? $"Save {selCount} Rooms as Favorite Piece"
+                    : "Save as Favorite Piece";
+                items.Add((label, saveAsPrefabAction, selCount > 0));
+            }
             return items;
         }
 
@@ -386,6 +393,142 @@ namespace WorldBuilder.Editors.Dungeon {
                 });
             }
             return clone;
+        }
+
+        /// <summary>
+        /// Extracts the currently selected cells into a DungeonPrefab that can be
+        /// saved as a custom/favorite piece for reuse in other dungeons.
+        /// </summary>
+        public DungeonPrefab? ExtractSelectionAsPrefab(string? displayName = null) {
+            if (_selection.SelectedCells.Count == 0 || _ctx.Document == null) return null;
+
+            var dats = _getDats();
+            var cells = new List<DungeonCellData>();
+            var cellNumSet = new HashSet<ushort>();
+
+            foreach (var selected in _selection.SelectedCells) {
+                var cellNum = (ushort)(selected.CellId & 0xFFFF);
+                var dc = _ctx.Document.GetCell(cellNum);
+                if (dc == null) continue;
+                cells.Add(dc);
+                cellNumSet.Add(cellNum);
+            }
+
+            if (cells.Count == 0) return null;
+
+            var first = cells[0];
+            var originPos = first.Origin;
+            var originRot = first.Orientation;
+            if (originRot.LengthSquared() < 0.01f) originRot = Quaternion.Identity;
+            originRot = Quaternion.Normalize(originRot);
+            var invRot = Quaternion.Conjugate(originRot);
+
+            var prefab = new DungeonPrefab {
+                SourceLandblock = _ctx.Document.LandblockKey,
+                SourceDungeonName = "Custom",
+                UsageCount = 1,
+                DisplayName = displayName ?? $"Custom Piece ({cells.Count} cell{(cells.Count != 1 ? "s" : "")})",
+                Category = "Custom",
+                Style = "Custom",
+            };
+
+            var cellIndexMap = new Dictionary<ushort, int>();
+            for (int i = 0; i < cells.Count; i++) {
+                var dc = cells[i];
+                cellIndexMap[dc.CellNumber] = i;
+
+                var relPos = Vector3.Transform(dc.Origin - originPos, invRot);
+                var relRot = Quaternion.Normalize(invRot * Quaternion.Normalize(
+                    dc.Orientation.LengthSquared() > 0.01f ? dc.Orientation : Quaternion.Identity));
+
+                prefab.Cells.Add(new PrefabCell {
+                    LocalIndex = i,
+                    EnvId = dc.EnvironmentId,
+                    CellStruct = dc.CellStructure,
+                    PortalCount = dc.CellPortals.Count,
+                    OffsetX = relPos.X, OffsetY = relPos.Y, OffsetZ = relPos.Z,
+                    RotX = relRot.X, RotY = relRot.Y, RotZ = relRot.Z, RotW = relRot.W,
+                    Surfaces = new List<ushort>(dc.Surfaces),
+                });
+            }
+
+            foreach (var dc in cells) {
+                int myIdx = cellIndexMap[dc.CellNumber];
+                foreach (var cp in dc.CellPortals) {
+                    if (cellNumSet.Contains(cp.OtherCellId) && cellIndexMap.TryGetValue(cp.OtherCellId, out int otherIdx)) {
+                        if (myIdx < otherIdx) {
+                            prefab.InternalPortals.Add(new PrefabPortal {
+                                CellIndexA = myIdx, PolyIdA = cp.PolygonId,
+                                CellIndexB = otherIdx, PolyIdB = cp.OtherPortalId,
+                            });
+                        }
+                    }
+                    else {
+                        float nx = 0, ny = 0, nz = 0;
+                        if (dats != null) {
+                            uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+                            if (dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env) &&
+                                env.Cells.TryGetValue(dc.CellStructure, out var cs)) {
+                                var geom = PortalSnapper.GetPortalGeometry(cs, cp.PolygonId);
+                                if (geom != null) {
+                                    var cellRot = Quaternion.Normalize(new Quaternion(
+                                        prefab.Cells[myIdx].RotX, prefab.Cells[myIdx].RotY,
+                                        prefab.Cells[myIdx].RotZ, prefab.Cells[myIdx].RotW));
+                                    var worldNormal = Vector3.Transform(geom.Value.Normal, cellRot);
+                                    nx = worldNormal.X; ny = worldNormal.Y; nz = worldNormal.Z;
+                                }
+                            }
+                        }
+
+                        prefab.OpenFaces.Add(new PrefabOpenFace {
+                            CellIndex = myIdx, PolyId = cp.PolygonId,
+                            EnvId = dc.EnvironmentId,
+                            CellStruct = dc.CellStructure,
+                            NormalX = nx, NormalY = ny, NormalZ = nz,
+                        });
+                    }
+                }
+
+                // Also check for portal polygon IDs that aren't connected to anything
+                if (dats != null) {
+                    uint envFileId2 = (uint)(dc.EnvironmentId | 0x0D000000);
+                    if (dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId2, out var env2) &&
+                        env2.Cells.TryGetValue(dc.CellStructure, out var cs2)) {
+                        var allPortalPolyIds = PortalSnapper.GetPortalPolygonIds(cs2);
+                        var connectedPolyIds = new HashSet<ushort>(dc.CellPortals.Select(c => c.PolygonId));
+                        foreach (var polyId in allPortalPolyIds) {
+                            if (connectedPolyIds.Contains(polyId)) continue;
+                            float nx = 0, ny = 0, nz = 0;
+                            var geom = PortalSnapper.GetPortalGeometry(cs2, polyId);
+                            if (geom != null) {
+                                var cellRot = Quaternion.Normalize(new Quaternion(
+                                    prefab.Cells[myIdx].RotX, prefab.Cells[myIdx].RotY,
+                                    prefab.Cells[myIdx].RotZ, prefab.Cells[myIdx].RotW));
+                                var worldNormal = Vector3.Transform(geom.Value.Normal, cellRot);
+                                nx = worldNormal.X; ny = worldNormal.Y; nz = worldNormal.Z;
+                            }
+                            prefab.OpenFaces.Add(new PrefabOpenFace {
+                                CellIndex = myIdx, PolyId = polyId,
+                                EnvId = dc.EnvironmentId,
+                                CellStruct = dc.CellStructure,
+                                NormalX = nx, NormalY = ny, NormalZ = nz,
+                            });
+                        }
+                    }
+                }
+            }
+
+            foreach (var of in prefab.OpenFaces) {
+                prefab.OpenFaceDirections.Add(DungeonPrefab.ClassifyDirection(of.NormalX, of.NormalY, of.NormalZ));
+            }
+
+            var timestamp = DateTime.UtcNow.Ticks;
+            prefab.Signature = $"custom_{timestamp}_{string.Join("|",
+                prefab.Cells.OrderBy(c => c.EnvId).ThenBy(c => c.CellStruct)
+                    .Select(c => $"{c.EnvId:X4}_{c.CellStruct}"))}";
+
+            Console.WriteLine($"[Dungeon] Extracted custom prefab: {prefab.DisplayName} ({prefab.Cells.Count} cells, {prefab.OpenFaces.Count} open faces)");
+            return prefab;
         }
     }
 }

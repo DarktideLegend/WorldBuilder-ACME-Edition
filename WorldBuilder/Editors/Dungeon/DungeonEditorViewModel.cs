@@ -218,8 +218,8 @@ namespace WorldBuilder.Editors.Dungeon {
             var objectTool = new ObjectPlacementTool();
             var portalConnectTool = new PortalConnectTool();
 
-            roomTool.CancelRequested += () => SelectTool(selectTool);
-            objectTool.CancelRequested += () => SelectTool(selectTool);
+            roomTool.CancelRequested += () => { CancelPlacement(); SelectTool(selectTool); };
+            objectTool.CancelRequested += () => { CancelObjectPlacement(); SelectTool(selectTool); };
 
             Tools.Add(selectTool);
             Tools.Add(roomTool);
@@ -748,7 +748,8 @@ namespace WorldBuilder.Editors.Dungeon {
         internal List<(string Label, Action Action, bool IsEnabled)> GetCellContextMenuItems(Vector3 rayOrigin, Vector3 rayDir) {
             return CellEditing.GetCellContextMenuItems(rayOrigin, rayDir,
                 deleteAction: () => { DeleteSelectedCellCommand.Execute(null); },
-                favoriteAction: () => { FavoriteSelectedRoomCommand.Execute(null); });
+                favoriteAction: () => { FavoriteSelectedRoomCommand.Execute(null); },
+                saveAsPrefabAction: () => { SaveSelectionAsPrefabCommand.Execute(null); });
         }
 
         internal void CopySelectedCells() {
@@ -976,6 +977,23 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         [RelayCommand]
+        private void SaveSelectionAsPrefab() {
+            if (Selection.SelectedCells.Count == 0 || _document == null || RoomPalette == null) {
+                StatusText = "Select one or more rooms first, then save as favorite piece";
+                return;
+            }
+
+            var prefab = CellEditing.ExtractSelectionAsPrefab();
+            if (prefab == null) {
+                StatusText = "Could not extract selection as piece";
+                return;
+            }
+
+            RoomPalette.AddCustomPrefab(prefab);
+            StatusText = $"Saved \"{prefab.DisplayName}\" to favorites ({prefab.Cells.Count} cell{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")})";
+        }
+
+        [RelayCommand]
         private void FavoriteSelectedRoom() {
             if (Selection.SelectedCell == null || _document == null || RoomPalette == null) return;
             var cellNum = (ushort)(Selection.SelectedCell.CellId & 0xFFFF);
@@ -1106,14 +1124,19 @@ namespace WorldBuilder.Editors.Dungeon {
 
             var kb = DungeonKnowledgeBuilder.LoadCached();
             if (kb == null || kb.Edges.Count == 0) {
-                StatusText = "No knowledge base — run Analyze Rooms first";
+                if (RoomPalette?.IsBuildingKnowledgeBase == true) {
+                    StatusText = "Knowledge base is rebuilding — please wait for it to finish, then try again";
+                }
+                else {
+                    StatusText = "Knowledge base needs rebuilding — restarting the editor will trigger an automatic rebuild";
+                }
                 return;
             }
 
             var result = await ShowGenerateDialog(kb);
             if (result == null) return;
 
-            StatusText = $"Generating {result.RoomCount}-room {result.Style} dungeon...";
+            StatusText = $"Generating {result.PrefabCount}-room {result.Style} dungeon...";
             try {
                 ushort lbKey = _loadedLandblockKey != 0 ? _loadedLandblockKey : (ushort)0xFFFF;
                 if (_document == null) {
@@ -1138,8 +1161,13 @@ namespace WorldBuilder.Editors.Dungeon {
                 _needsCameraFocus = true;
                 CellCount = _document?.Cells.Count ?? 0;
                 int openPortals = CountOpenPortals();
-                StatusText = $"Generated {CellCount} rooms ({openPortals} open doorways). Disconnect doorways to branch, or add rooms from the catalog.";
-                Console.WriteLine($"[Dungeon] Generated: {CellCount} cells, {openPortals} open portals, style={result.Style}, seed={result.Seed}");
+                var opts = new List<string>();
+                if (result.RequireRoof) opts.Add("roofed");
+                if (!result.AllowVertical) opts.Add("no vertical");
+                if (result.LockStyle) opts.Add("style-locked");
+                var optsStr = opts.Count > 0 ? $" [{string.Join(", ", opts)}]" : "";
+                StatusText = $"Generated {CellCount} cells across {result.PrefabCount} rooms ({openPortals} open doorways){optsStr}.";
+                Console.WriteLine($"[Dungeon] Generated: {CellCount} cells, {result.PrefabCount} target rooms, {openPortals} open portals, style={result.Style}, seed={result.Seed}");
             }
             catch (Exception ex) {
                 StatusText = $"Generation failed: {ex.Message}";
@@ -1164,6 +1192,9 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_scene != null) {
                 _scene.RoomPlacementPreview = null;
                 _scene.IsInPlacementMode = false;
+                _scene.ClearPreview();
+                _scene.HighlightedPortalCellNum = 0;
+                _scene.HighlightedPortalPolyId = 0;
             }
         }
 
@@ -1732,19 +1763,17 @@ namespace WorldBuilder.Editors.Dungeon {
                 if (_document.Cells.Count > 5) Console.WriteLine($"  ... and {_document.Cells.Count - 5} more cells");
             }
 
-            // Use document cells for rendering (handles both DAT-loaded and project-saved state)
-            if (_document.Cells.Count > 0) {
-                _scene.RefreshFromDocument(_document);
-                CellCount = _document.Cells.Count;
-                StatusText = $"Dungeon loaded: {CellCount} rooms";
-                HasDungeon = true;
-                _needsCameraFocus = true;
+            // If document is empty, try loading cells from DAT
+            if (_document.Cells.Count == 0) {
+                _document.ReloadFromDat(_dats);
             }
-            else if (_scene.LoadLandblock(landblockKey)) {
-                uint lbiId = ((uint)landblockKey << 16) | 0xFFFE;
-                int numCells = _dats.TryGet<LandBlockInfo>(lbiId, out var lbi) ? (int)lbi.NumCells : 0;
-                CellCount = numCells;
-                StatusText = $"Dungeon loaded: {CellCount} rooms (read-only from DAT)";
+
+            if (_document.Cells.Count > 0) {
+                RefreshRendering();
+                CellCount = _document.Cells.Count;
+                int openPortals = CountOpenPortals();
+                int connectedPortals = _document.Cells.Sum(c => c.CellPortals.Count);
+                StatusText = $"Dungeon loaded: {CellCount} rooms, {connectedPortals / 2} connections, {openPortals} open doorways";
                 HasDungeon = true;
                 _needsCameraFocus = true;
             }

@@ -25,6 +25,14 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
         public override void OnDeactivated() {
             _hasSource = false;
             StatusText = "";
+            ClearHighlight(null);
+        }
+
+        private static void ClearHighlight(DungeonEditingContext? ctx) {
+            if (ctx?.Scene != null) {
+                ctx.Scene.HighlightedPortalCellNum = 0;
+                ctx.Scene.HighlightedPortalPolyId = 0;
+            }
         }
 
         public override bool HandleMouseDown(MouseState mouseState, DungeonEditingContext ctx) {
@@ -45,7 +53,8 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 _sourceCellNum = cellNum;
                 _sourcePolyId = polyId;
                 _hasSource = true;
-                StatusText = $"Source: cell 0x{cellNum:X4} portal 0x{polyId:X4} — now click the target doorway";
+                var sourceName = GetPortalRoomName(ctx, cellNum);
+                StatusText = $"Source: {sourceName} — now click the target doorway";
                 return true;
             }
 
@@ -72,8 +81,11 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             ctx.CommandHistory.Execute(cmd, ctx.Document);
             ctx.RefreshRendering();
 
-            StatusText = $"Connected 0x{_sourceCellNum:X4}:0x{_sourcePolyId:X4} \u2194 0x{cellNum:X4}:0x{polyId:X4} — click another doorway or Escape";
+            var srcName = GetPortalRoomName(ctx, _sourceCellNum);
+            var tgtName = GetPortalRoomName(ctx, cellNum);
+            StatusText = $"Connected {srcName} \u2194 {tgtName} — click another doorway or Escape";
             _hasSource = false;
+            ClearHighlight(ctx);
             return true;
         }
 
@@ -85,12 +97,34 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             var portal = FindNearestOpenPortal(mouseState, ctx);
             if (portal != null) {
                 var (cellNum, polyId) = portal.Value;
-                if (_hasSource)
-                    ctx.SetStatus($"Target: cell 0x{cellNum:X4} portal 0x{polyId:X4}");
-                else
-                    ctx.SetStatus($"Source: cell 0x{cellNum:X4} portal 0x{polyId:X4}");
+                ctx.Scene.HighlightedPortalCellNum = cellNum;
+                ctx.Scene.HighlightedPortalPolyId = polyId;
+
+                var roomName = GetPortalRoomName(ctx, cellNum);
+                if (_hasSource) {
+                    var srcName = GetPortalRoomName(ctx, _sourceCellNum);
+                    ctx.SetStatus($"From: {srcName} \u2192 To: {roomName}  (click to connect)");
+                }
+                else {
+                    ctx.SetStatus($"Doorway on: {roomName}  (click to select as source)");
+                }
+            }
+            else {
+                ClearHighlight(ctx);
+                if (_hasSource) {
+                    var srcName = GetPortalRoomName(ctx, _sourceCellNum);
+                    ctx.SetStatus($"Source: {srcName} \u2014 hover over another doorway to connect");
+                }
             }
             return false;
+        }
+
+        private static string GetPortalRoomName(DungeonEditingContext ctx, ushort cellNum) {
+            var dc = ctx.Document?.GetCell(cellNum);
+            if (dc == null) return $"Cell 0x{cellNum:X4}";
+            uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+            var name = ctx.RoomPalette?.GetRoomDisplayName(envFileId, dc.CellStructure);
+            return !string.IsNullOrEmpty(name) ? name : $"Cell 0x{cellNum:X4}";
         }
 
         public override bool HandleKeyDown(KeyEventArgs e, DungeonEditingContext ctx) {

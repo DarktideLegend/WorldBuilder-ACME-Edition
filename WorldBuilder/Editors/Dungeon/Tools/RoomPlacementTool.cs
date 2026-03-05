@@ -35,6 +35,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             _pendingRoom = null;
             _pendingPrefab = null;
             StatusText = "";
+            _lastPreviewSnappedToPortal = false;
         }
 
         public void SetRoom(RoomEntry room) {
@@ -161,6 +162,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
         /// Compute preview position for either a single room or the first cell of a prefab.
         /// Tries portal snapping first; falls back to projecting the mouse ray onto a
         /// horizontal plane so the ghost always follows the cursor.
+        /// Also sets the highlighted portal on the scene for visual feedback.
         /// </summary>
         private (Vector3 Origin, Quaternion Orientation)? ComputePreviewForAny(
             DungeonEditingContext ctx, Vector3 rayOrigin, Vector3 rayDir) {
@@ -169,7 +171,12 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
 
             _lastPreviewSnappedToPortal = false;
 
-            // Try portal snapping if dungeon has cells
+            // Clear portal highlight
+            if (ctx.Scene != null) {
+                ctx.Scene.HighlightedPortalCellNum = 0;
+                ctx.Scene.HighlightedPortalPolyId = 0;
+            }
+
             if (ctx.Document.Cells.Count > 0) {
                 var snapped = TryComputePortalSnap(ctx, rayOrigin, rayDir);
                 if (snapped != null) {
@@ -178,8 +185,6 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 }
             }
 
-            // Fall back: project the ray onto a horizontal plane so the ghost
-            // follows the mouse. Use Z=0 for empty dungeons, average cell Z otherwise.
             float planeZ = 0f;
             if (ctx.Document.Cells.Count > 0)
                 planeZ = ctx.Document.Cells.Average(c => c.Origin.Z);
@@ -198,6 +203,12 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             if (bestCell == null) return null;
 
             var (targetDocCell, targetCellStruct, openPortalId, _) = bestCell.Value;
+
+            // Highlight the target portal so the user can see where connection will happen
+            if (ctx.Scene != null) {
+                ctx.Scene.HighlightedPortalCellNum = targetDocCell.CellNumber;
+                ctx.Scene.HighlightedPortalPolyId = openPortalId;
+            }
 
             ushort srcEnvId, srcCellStruct;
             if (_pendingPrefab != null && _pendingPrefab.Cells.Count > 0) {
@@ -262,6 +273,8 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 if (ctx.Scene != null) {
                     ctx.Scene.RoomPlacementPreview = null;
                     ctx.Scene.ClearPreview();
+                    ctx.Scene.HighlightedPortalCellNum = 0;
+                    ctx.Scene.HighlightedPortalPolyId = 0;
                 }
                 CancelRequested?.Invoke();
                 return true;
@@ -288,11 +301,11 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             if (_pendingRoom == null || ctx.Document == null || ctx.Dats == null) return;
 
             var bestCell = FindNearestOpenPortalCell(ctx, rayOrigin, rayDir);
-            if (bestCell == null) { StatusText = "No open portals — disconnect a portal first"; return; }
+            if (bestCell == null) { StatusText = "No open doorways — disconnect a doorway first"; return; }
 
             var (targetDocCell, targetCellStruct, openPortalId, targetCellNum) = bestCell.Value;
+            var targetName = GetCellName(ctx, targetCellNum);
 
-            // Try adjacency index first for proven transform + source portal
             if (ctx.PortalIndex != null) {
                 var match = ctx.PortalIndex.FindMatch(
                     targetDocCell.EnvironmentId, targetDocCell.CellStructure, openPortalId,
@@ -307,7 +320,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                         connectToCellNum: targetCellNum, connectToPolyId: openPortalId, sourcePolyId: match.PolyId);
                     ctx.CommandHistory.Execute(idxCmd, ctx.Document);
                     ctx.RefreshRendering();
-                    ctx.SetStatus($"{ctx.Document.Cells.Count} cells (indexed connection, used {match.Count}x in AC)");
+                    ctx.SetStatus($"{ctx.Document.Cells.Count} cells — connected to {targetName}");
                     return;
                 }
             }
@@ -336,7 +349,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 connectToCellNum: targetCellNum, connectToPolyId: openPortalId, sourcePolyId: srcPortalId.Value);
             ctx.CommandHistory.Execute(cmd, ctx.Document);
             ctx.RefreshRendering();
-            ctx.SetStatus($"{ctx.Document.Cells.Count} cells — click to place next");
+            ctx.SetStatus($"{ctx.Document.Cells.Count} cells — connected to {targetName}");
         }
 
         // ── Prefab placement ────────────────────────────────────────────
@@ -366,7 +379,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             if (_pendingPrefab == null || ctx.Document == null || ctx.Dats == null) return;
 
             var bestCell = FindNearestOpenPortalCell(ctx, rayOrigin, rayDir);
-            if (bestCell == null) { StatusText = "No open portals — disconnect a portal first"; return; }
+            if (bestCell == null) { StatusText = "No open doorways — disconnect a doorway first"; return; }
 
             var (targetDocCell, targetCellStruct, openPortalId, targetCellNum) = bestCell.Value;
             var targetGeom = PortalSnapper.GetPortalGeometry(targetCellStruct, openPortalId);
@@ -401,11 +414,12 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 ctx.CommandHistory.Record(composite);
                 ctx.RefreshRendering();
                 ctx.RequestCameraFocus();
-                ctx.SetStatus($"{ctx.Document.Cells.Count} cells — click to place next");
+                var tgtName = GetCellName(ctx, targetCellNum);
+                ctx.SetStatus($"{ctx.Document.Cells.Count} cells — connected to {tgtName}");
                 return;
             }
 
-            StatusText = "Could not attach prefab — no compatible portal face";
+            StatusText = "Could not attach piece — no compatible doorway";
         }
 
         private void PlaceRemainingPrefabCells(DungeonEditingContext ctx, DungeonPrefab prefab,
@@ -510,10 +524,22 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
 
             if (hit != null && hit.Value.Hit) {
                 var hitPos = hit.Value.HitPosition;
-                var nearest = open.OrderBy(p => (p.centroid - hitPos).LengthSquared()).First();
-                return (nearest.dc, nearest.cs, nearest.portalId, nearest.cellNum);
+                var hitCellId = hit.Value.Cell.CellId;
+                var hitCellNum = (ushort)(hitCellId & 0xFFFF);
+
+                // Prefer open portals on the cell the user is actually hovering
+                var onHoveredCell = open.Where(p => p.cellNum == hitCellNum).ToList();
+                if (onHoveredCell.Count > 0) {
+                    var nearest = onHoveredCell.OrderBy(p => (p.centroid - hitPos).LengthSquared()).First();
+                    return (nearest.dc, nearest.cs, nearest.portalId, nearest.cellNum);
+                }
+
+                // Fall back to nearest open portal to the hit point
+                var nearestAll = open.OrderBy(p => (p.centroid - hitPos).LengthSquared()).First();
+                return (nearestAll.dc, nearestAll.cs, nearestAll.portalId, nearestAll.cellNum);
             }
 
+            // No geometry hit -- pick nearest to ray
             float bestDist = float.MaxValue;
             (DungeonCellData dc, CellStruct cs, ushort portalId, ushort cellNum, Vector3 centroid)? best = null;
             foreach (var p in open) {
@@ -525,6 +551,14 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 if (dist < bestDist) { bestDist = dist; best = p; }
             }
             return best.HasValue ? (best.Value.dc, best.Value.cs, best.Value.portalId, best.Value.cellNum) : null;
+        }
+
+        private static string GetCellName(DungeonEditingContext ctx, ushort cellNum) {
+            var dc = ctx.Document?.GetCell(cellNum);
+            if (dc == null) return $"Cell 0x{cellNum:X4}";
+            uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+            var name = ctx.RoomPalette?.GetRoomDisplayName(envFileId, dc.CellStructure);
+            return !string.IsNullOrEmpty(name) ? name : $"Cell 0x{cellNum:X4}";
         }
     }
 }

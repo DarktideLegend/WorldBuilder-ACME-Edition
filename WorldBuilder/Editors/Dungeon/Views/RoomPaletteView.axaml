@@ -23,10 +23,24 @@
                 BorderBrush="#2a1d42"
                 BorderThickness="0,0,0,1"
                 Padding="8,6">
-            <TextBlock Text="Dungeon Pieces"
-                       FontSize="12"
-                       FontWeight="SemiBold"
-                       Foreground="#c0b0d8" />
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="Dungeon Pieces"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="#c0b0d8" />
+                <ToggleButton Grid.Column="1"
+                              IsChecked="{Binding ShowFavoritePrefabsMode}"
+                              ToolTip.Tip="Show only favorite pieces"
+                              Padding="4,2" FontSize="11"
+                              Background="Transparent" BorderThickness="0">
+                    <Panel>
+                        <TextBlock Text="&#x2605;" FontSize="14" Foreground="#c8a832"
+                                   IsVisible="{Binding ShowFavoritePrefabsMode}" />
+                        <TextBlock Text="&#x2606;" FontSize="14" Foreground="#5a4a6e"
+                                   IsVisible="{Binding !ShowFavoritePrefabsMode}" />
+                    </Panel>
+                </ToggleButton>
+            </Grid>
         </Border>
 
         <!-- Search -->
@@ -37,7 +51,8 @@
         </Border>
 
         <!-- Category filter -->
-        <Border DockPanel.Dock="Top" Padding="6,2">
+        <Border DockPanel.Dock="Top" Padding="6,2"
+                IsVisible="{Binding !ShowFavoritePrefabsMode}">
             <Grid ColumnDefinitions="*,Auto">
                 <ComboBox Grid.Column="0" ItemsSource="{Binding CatalogCategories}"
                           SelectedItem="{Binding CatalogCategory}"
@@ -122,6 +137,21 @@
                                     <TextBlock Text="{Binding RoofStatus}" FontSize="8"
                                                Foreground="{Binding RoofStatusBrush}" />
                                 </Border>
+                                <!-- Favorite star overlay (bottom-left) -->
+                                <Button CornerRadius="0,4,0,0" Padding="2,0"
+                                        Background="#CC1a0e30"
+                                        BorderThickness="0"
+                                        HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                        ToolTip.Tip="Toggle favorite"
+                                        Click="FavoriteStar_Click"
+                                        Cursor="Hand" Focusable="False">
+                                    <Panel>
+                                        <TextBlock Text="&#x2605;" FontSize="12" Foreground="#c8a832"
+                                                   IsVisible="{Binding IsFavorite}" />
+                                        <TextBlock Text="&#x2606;" FontSize="12" Foreground="#5a4a6e"
+                                                   IsVisible="{Binding !IsFavorite}" />
+                                    </Panel>
+                                </Button>
                             </Panel>
 
                             <!-- Row 0: Name -->

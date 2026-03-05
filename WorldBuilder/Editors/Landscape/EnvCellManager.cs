@@ -44,6 +44,9 @@ namespace WorldBuilder.Editors.Landscape {
         // Per-landblock list of loaded dungeon cells
         private readonly Dictionary<ushort, List<LoadedEnvCell>> _loadedCells = new();
 
+        // Synchronizes access to _gpuCache, _loadedCells, _cellLookup across render and UI threads
+        private readonly object _cellLock = new();
+
         // Track which landblocks are dungeon-only (vs building interiors)
         private readonly HashSet<ushort> _dungeonOnlyLandblocks = new();
         // Track landblocks that contain both building AND dungeon cells
@@ -142,7 +145,7 @@ namespace WorldBuilder.Editors.Landscape {
         /// <summary>
         /// Returns the total number of loaded cells across all landblocks (dungeon + building).
         /// </summary>
-        public int LoadedCellCount => _loadedCells.Values.Sum(list => list.Count);
+        public int LoadedCellCount { get { lock (_cellLock) return _loadedCells.Values.Sum(list => list.Count); } }
 
         /// <summary>
         /// Returns the number of loaded dungeon cells (excludes building interiors).
@@ -693,12 +696,17 @@ namespace WorldBuilder.Editors.Landscape {
             var cells = new List<LoadedEnvCell>();
 
             foreach (var prepared in batch.Cells) {
-                // Check if GPU data already exists for this geometry+surface combo
-                if (!_gpuCache.TryGetValue(prepared.GpuKey, out var renderData)) {
-                    // Upload new GPU data
+                EnvCellRenderData? renderData;
+                lock (_cellLock) {
+                    if (!_gpuCache.TryGetValue(prepared.GpuKey, out renderData)) {
+                        renderData = null;
+                    }
+                }
+
+                if (renderData == null) {
                     renderData = UploadCellStructToGpu(prepared.MeshData);
                     if (renderData == null) continue;
-                    _gpuCache[prepared.GpuKey] = renderData;
+                    lock (_cellLock) { _gpuCache[prepared.GpuKey] = renderData; }
                 }
 
                 Matrix4x4.Invert(prepared.WorldTransform, out var inverseTransform);
@@ -719,11 +727,11 @@ namespace WorldBuilder.Editors.Landscape {
                     LocalBoundsMax = prepared.LocalBoundsMax
                 };
                 cells.Add(loadedCell);
-                _cellLookup[prepared.CellId] = loadedCell;
+                lock (_cellLock) { _cellLookup[prepared.CellId] = loadedCell; }
             }
 
             if (cells.Count > 0) {
-                _loadedCells[batch.LandblockKey] = cells;
+                lock (_cellLock) { _loadedCells[batch.LandblockKey] = cells; }
                 if (batch.IsDungeonOnly)
                     _dungeonOnlyLandblocks.Add(batch.LandblockKey);
                 else
@@ -1075,46 +1083,49 @@ namespace WorldBuilder.Editors.Landscape {
         /// Must be called on the GL thread.
         /// </summary>
         public void UnloadLandblock(ushort lbKey) {
-            if (!_loadedCells.TryGetValue(lbKey, out var cells)) return;
-
-            // Track which GPU keys are still in use by other landblocks
+            List<LoadedEnvCell>? cells;
             var keysToRemove = new HashSet<EnvCellGpuKey>();
-            foreach (var cell in cells) {
-                keysToRemove.Add(cell.GpuKey);
-            }
 
-            // Remove cells from the fast lookup
-            foreach (var cell in cells) {
-                _cellLookup.Remove(cell.CellId);
-                if (_lastCameraCell?.CellId == cell.CellId)
-                    _lastCameraCell = null;
-            }
+            lock (_cellLock) {
+                if (!_loadedCells.TryGetValue(lbKey, out cells)) return;
 
-            _loadedCells.Remove(lbKey);
-            _dungeonOnlyLandblocks.Remove(lbKey);
-            _mixedLandblocks.Remove(lbKey);
+                foreach (var cell in cells) {
+                    keysToRemove.Add(cell.GpuKey);
+                }
 
-            // Check if any remaining landblocks still reference these GPU keys
-            foreach (var otherCells in _loadedCells.Values) {
-                foreach (var cell in otherCells) {
-                    keysToRemove.Remove(cell.GpuKey);
+                foreach (var cell in cells) {
+                    _cellLookup.Remove(cell.CellId);
+                    if (_lastCameraCell?.CellId == cell.CellId)
+                        _lastCameraCell = null;
+                }
+
+                _loadedCells.Remove(lbKey);
+                _dungeonOnlyLandblocks.Remove(lbKey);
+                _mixedLandblocks.Remove(lbKey);
+
+                foreach (var otherCells in _loadedCells.Values) {
+                    foreach (var cell in otherCells) {
+                        keysToRemove.Remove(cell.GpuKey);
+                    }
                 }
             }
 
-            // Release unreferenced GPU resources
+            // Release unreferenced GPU resources (GL calls outside lock)
             var gl = _renderer.GraphicsDevice.GL;
             foreach (var key in keysToRemove) {
-                if (_gpuCache.TryGetValue(key, out var renderData)) {
-                    if (renderData.VAO != 0) gl.DeleteVertexArray(renderData.VAO);
-                    if (renderData.VBO != 0) gl.DeleteBuffer(renderData.VBO);
-                    if (renderData.PortalOccluderIBO != 0) gl.DeleteBuffer(renderData.PortalOccluderIBO);
-                    foreach (var batch in renderData.Batches) {
-                        if (batch.IBO != 0) gl.DeleteBuffer(batch.IBO);
-                    }
-                    foreach (var atlas in renderData.LocalAtlases.Values) {
-                        atlas.Dispose();
-                    }
+                EnvCellRenderData? renderData;
+                lock (_cellLock) {
+                    if (!_gpuCache.TryGetValue(key, out renderData)) continue;
                     _gpuCache.Remove(key);
+                }
+                if (renderData.VAO != 0) gl.DeleteVertexArray(renderData.VAO);
+                if (renderData.VBO != 0) gl.DeleteBuffer(renderData.VBO);
+                if (renderData.PortalOccluderIBO != 0) gl.DeleteBuffer(renderData.PortalOccluderIBO);
+                foreach (var batch in renderData.Batches) {
+                    if (batch.IBO != 0) gl.DeleteBuffer(batch.IBO);
+                }
+                foreach (var atlas in renderData.LocalAtlases.Values) {
+                    atlas.Dispose();
                 }
             }
         }
