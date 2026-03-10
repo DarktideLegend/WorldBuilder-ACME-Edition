@@ -446,9 +446,37 @@ namespace WorldBuilder.Editors.Dungeon {
 
         private void InitDocking() {
             var layouts = Settings.Dungeon.UIState.DockingLayout;
+            var preferredDock = new Dictionary<string, Lib.Docking.DockLocation>(StringComparer.OrdinalIgnoreCase) {
+                ["RoomPalette"] = Lib.Docking.DockLocation.Left,
+                ["ObjectBrowser"] = Lib.Docking.DockLocation.Left,
+                ["SurfaceBrowser"] = Lib.Docking.DockLocation.Left,
+                ["Toolbox"] = Lib.Docking.DockLocation.Right,
+                ["History"] = Lib.Docking.DockLocation.Right,
+                ["InstancePlacements"] = Lib.Docking.DockLocation.Right,
+                ["DungeonGraph"] = Lib.Docking.DockLocation.Right
+            };
 
             // Clear stale layout entries for panels whose default location changed
             layouts.RemoveAll(l => l.Id == "Toolbox");
+            foreach (var layout in layouts) {
+                if (!preferredDock.TryGetValue(layout.Id, out var expectedLoc)) {
+                    continue;
+                }
+
+                if (Enum.TryParse<Lib.Docking.DockLocation>(layout.Location, out var savedLoc)
+                    && savedLoc != expectedLoc
+                    && (savedLoc == Lib.Docking.DockLocation.Bottom
+                        || savedLoc == Lib.Docking.DockLocation.Top
+                        || savedLoc == Lib.Docking.DockLocation.Center)) {
+                    layout.Location = expectedLoc.ToString();
+                }
+            }
+
+            var graphLayout = layouts.FirstOrDefault(l => l.Id == "DungeonGraph");
+            if (graphLayout != null) {
+                graphLayout.Location = Lib.Docking.DockLocation.Right.ToString();
+                graphLayout.IsVisible = true;
+            }
 
             void Register(string id, string title, object content, Lib.Docking.DockLocation defaultLoc) {
                 var panel = new Lib.Docking.DockablePanelViewModel(id, title, content, DockingManager);
@@ -467,10 +495,23 @@ namespace WorldBuilder.Editors.Dungeon {
             if (ObjectBrowser != null) Register("ObjectBrowser", "Object Browser", ObjectBrowser, Lib.Docking.DockLocation.Left);
             if (SurfaceBrowser != null) Register("SurfaceBrowser", "Surfaces", SurfaceBrowser, Lib.Docking.DockLocation.Left);
             if (Toolbox != null) Register("Toolbox", "Tools", Toolbox, Lib.Docking.DockLocation.Right);
+            _graphPanel = new DungeonGraphPanelViewModel(this);
+            Register("DungeonGraph", "Dungeon Map", _graphPanel, Lib.Docking.DockLocation.Right);
             if (HistoryPanel != null) Register("History", "History", HistoryPanel, Lib.Docking.DockLocation.Right);
             Register("InstancePlacements", "Instance Placements", new InstancePlacementsPanelViewModel(this), Lib.Docking.DockLocation.Right);
-            _graphPanel = new DungeonGraphPanelViewModel(this);
-            Register("DungeonGraph", "Dungeon Map", _graphPanel, Lib.Docking.DockLocation.Bottom);
+
+            // Normalize known panel locations when legacy layouts put them in top/bottom/center.
+            foreach (var panel in DockingManager.AllPanels) {
+                if (!preferredDock.TryGetValue(panel.Id, out var expectedLoc)) {
+                    continue;
+                }
+
+                if (panel.Location == Lib.Docking.DockLocation.Bottom
+                    || panel.Location == Lib.Docking.DockLocation.Top
+                    || panel.Location == Lib.Docking.DockLocation.Center) {
+                    DockingManager.MovePanel(panel, expectedLoc);
+                }
+            }
 
             var uiState = Settings.Dungeon.UIState;
             if (Enum.TryParse<Lib.Docking.DockRegionMode>(uiState.LeftDockMode, out var leftMode))

@@ -14,6 +14,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using WorldBuilder.Editors.Landscape.ViewModels;
 using WorldBuilder.Lib.Extensions;
@@ -30,6 +31,7 @@ namespace WorldBuilder.Lib {
         private readonly ILogger<ProjectSelectionViewModel> _log;
         private readonly WorldBuilderSettings _settings;
         private ServiceProvider? _projectProvider;
+        private readonly SemaphoreSlim _projectInitGate = new(1, 1);
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
         internal static ProjectManager Instance;
@@ -94,32 +96,44 @@ namespace WorldBuilder.Lib {
         /// Async version of SetProject for loading screen - runs heavy initialization on a background thread.
         /// </summary>
         public async Task LoadProjectAsync(string projectPath) {
-            _projectProvider?.Dispose();
-            CurrentProject?.Dispose();
+            await _projectInitGate.WaitAsync();
+            try {
+                _projectProvider?.Dispose();
+                CurrentProject?.Dispose();
 
-            var project = Project.FromDisk(projectPath);
-            if (project == null) {
-                throw new Exception($"Failed to load project: {projectPath}");
+                var project = Project.FromDisk(projectPath);
+                if (project == null) {
+                    throw new Exception($"Failed to load project: {projectPath}");
+                }
+
+                await Task.Run(() => InitializeProjectServices(project));
+                FinalizeProject(project);
             }
-
-            await Task.Run(() => InitializeProjectServices(project));
-            FinalizeProject(project);
+            finally {
+                _projectInitGate.Release();
+            }
         }
 
         /// <summary>
         /// Async version of create project for loading screen - runs heavy initialization on a background thread.
         /// </summary>
         public async Task CreateProjectAsync(string projectName, string projectLocation, string baseDatDirectory) {
-            var project = Project.Create(projectName,
-                Path.Combine(projectLocation, $"{projectName}.wbproj"),
-                baseDatDirectory);
+            await _projectInitGate.WaitAsync();
+            try {
+                var project = Project.Create(projectName,
+                    Path.Combine(projectLocation, $"{projectName}.wbproj"),
+                    baseDatDirectory);
 
-            if (project == null) {
-                throw new Exception("Failed to create project");
+                if (project == null) {
+                    throw new Exception("Failed to create project");
+                }
+
+                await Task.Run(() => InitializeProjectServices(project));
+                FinalizeProject(project);
             }
-
-            await Task.Run(() => InitializeProjectServices(project));
-            FinalizeProject(project);
+            finally {
+                _projectInitGate.Release();
+            }
         }
 
         private void InitializeProjectServices(Project project) {

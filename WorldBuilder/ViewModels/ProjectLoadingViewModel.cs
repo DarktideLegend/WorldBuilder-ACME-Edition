@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Messaging;
 using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using WorldBuilder.Lib;
 using static WorldBuilder.ViewModels.SplashPageViewModel;
@@ -16,6 +17,7 @@ public partial class ProjectLoadingViewModel : SplashPageViewModelBase,
 
     private readonly ProjectManager _projectManager;
     private readonly ILogger<ProjectLoadingViewModel> _log;
+    private int _hasStarted;
 
     [ObservableProperty]
     private string _projectName = "";
@@ -38,11 +40,21 @@ public partial class ProjectLoadingViewModel : SplashPageViewModelBase,
     }
 
     public void Receive(StartProjectLoadMessage message) {
+        if (Interlocked.Exchange(ref _hasStarted, 1) == 1) {
+            _log.LogWarning("Duplicate StartProjectLoadMessage received for {Path}; ignoring.", message.Value);
+            return;
+        }
+
         ProjectName = Path.GetFileNameWithoutExtension(message.Value);
         _ = LoadProject(message.Value);
     }
 
     public void Receive(StartProjectCreateMessage message) {
+        if (Interlocked.Exchange(ref _hasStarted, 1) == 1) {
+            _log.LogWarning("Duplicate StartProjectCreateMessage received for {ProjectName}; ignoring.", message.ProjectName);
+            return;
+        }
+
         ProjectName = message.ProjectName;
         _ = CreateProject(message);
     }

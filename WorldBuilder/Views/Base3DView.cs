@@ -355,6 +355,7 @@ namespace WorldBuilder.Views {
         protected abstract void OnGlRender(double frameTime);
         protected abstract void OnGlResize(PixelSize canvasSize);
         protected abstract void OnGlDestroy();
+        protected virtual bool UseLocalFramebufferBlit => false;
 
         #region GlVisual Class
         private class GlVisual : CompositionCustomVisualHandler {
@@ -477,12 +478,11 @@ namespace WorldBuilder.Views {
 
                                 int destW = controlSize.Width;
                                 int destH = controlSize.Height;
-
-                                int destX = _screenPosition.X;
+                                int destX = _parent.UseLocalFramebufferBlit ? 0 : _screenPosition.X;
                                 int destY;
 
                                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
-                                    destY = _screenPosition.Y;
+                                    destY = _parent.UseLocalFramebufferBlit ? 0 : _screenPosition.Y;
                                     gl.BlitFramebuffer(
                                         0, 0, srcWidth, srcHeight,
                                         destX, destY, destX + destW, destY + destH,
@@ -490,7 +490,9 @@ namespace WorldBuilder.Views {
                                     );
                                 }
                                 else {
-                                    destY = originalViewport[3] - (_screenPosition.Y + destH);
+                                    destY = _parent.UseLocalFramebufferBlit
+                                        ? 0
+                                        : originalViewport[3] - (_screenPosition.Y + destH);
                                     gl.BlitFramebuffer(
                                         0, 0, srcWidth, srcHeight,
                                         destX, destY + destH, destX + destW, destY,

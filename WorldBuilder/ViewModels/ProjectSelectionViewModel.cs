@@ -24,6 +24,7 @@ public partial class ProjectSelectionViewModel : SplashPageViewModelBase {
     private readonly ILogger<ProjectSelectionViewModel> _log;
     private readonly WorldBuilderSettings _settings;
     private readonly ProjectManager _projectManager;
+    private bool _isStartingProjectLoad;
 
     public ObservableCollection<RecentProject> RecentProjects => _projectManager.RecentProjects;
 
@@ -81,6 +82,12 @@ public partial class ProjectSelectionViewModel : SplashPageViewModelBase {
     }
 
     private void LoadProject(string filePath) {
+        if (_isStartingProjectLoad) {
+            _log.LogWarning("Ignoring duplicate project load request: {Path}", filePath);
+            return;
+        }
+
+        _isStartingProjectLoad = true;
         _log.LogInformation($"LoadProject: {filePath}");
 
         // Navigate to loading screen, then send the load message
