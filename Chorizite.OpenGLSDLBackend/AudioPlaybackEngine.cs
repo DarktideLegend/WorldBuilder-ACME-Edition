@@ -1,4 +1,4 @@
-﻿using NAudio.Wave.SampleProviders;
+using NAudio.Wave.SampleProviders;
 using NAudio.Wave;
 using System;
 using System.Collections.Generic;
@@ -25,7 +25,7 @@ namespace Chorizite.OpenGLSDLBackend {
         }
 
         public void PlaySound(CachedSound sound) {
-            AddMixerInput(new CachedSoundSampleProvider(sound));
+            mixer.AddMixerInput(new CachedSoundSampleProvider(sound));
         }
 
         private void AddMixerInput(IWaveProvider input) {
@@ -53,7 +53,7 @@ namespace Chorizite.OpenGLSDLBackend {
             }
         }
     }
-    public class CachedSoundSampleProvider : IWaveProvider {
+    public class CachedSoundSampleProvider : ISampleProvider {
         private readonly CachedSound cachedSound;
         private long position;
 
@@ -61,15 +61,16 @@ namespace Chorizite.OpenGLSDLBackend {
             this.cachedSound = cachedSound;
         }
 
-        public int Read(byte[] buffer, int offset, int count) {
+        public int Read(float[] buffer, int offset, int count) {
             var availableSamples = cachedSound.AudioData.Length - position;
-            var samplesToCopy = Math.Min(availableSamples, count);
+            var samplesToCopy = (int)Math.Min(availableSamples, count);
+            if (samplesToCopy <= 0) return 0;
             Array.Copy(cachedSound.AudioData, position, buffer, offset, samplesToCopy);
             position += samplesToCopy;
-            return (int)samplesToCopy;
+            return samplesToCopy;
         }
 
-        public WaveFormat WaveFormat { get { return cachedSound.WaveFormat; } }
+        public WaveFormat WaveFormat => cachedSound.WaveFormat;
     }
     public class AutoDisposeWaveReader : IWaveProvider {
         private readonly WaveFileReader reader;

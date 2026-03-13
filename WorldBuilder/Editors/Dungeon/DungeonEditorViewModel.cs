@@ -1,4 +1,4 @@
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
@@ -31,12 +31,13 @@ using WorldBuilder.Editors.Landscape;
 
 namespace WorldBuilder.Editors.Dungeon {
     public partial class DungeonEditorViewModel : ViewModelBase {
-        [ObservableProperty] private string _statusText = "No dungeon loaded — open or create one to get started.  Pick rooms from the catalog to build your dungeon.";
+        [ObservableProperty] private string _statusText = "No dungeon loaded ΓÇö open or create one to get started.  Pick rooms from the catalog to build your dungeon.";
         [ObservableProperty] private string _landblockInputText = "";
         [ObservableProperty] private string _currentPositionText = "";
         [ObservableProperty] private string _cursorHudText = "";
         [ObservableProperty] private bool _showCursorHud;
-        [ObservableProperty] private string _selectedCellInfo = "";        [ObservableProperty]
+        [ObservableProperty] private string _selectedCellInfo = "";
+        [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ShowHoveredCellInfo))]
         private string _hoveredCellInfo = "";
         public bool ShowHoveredCellInfo => !string.IsNullOrEmpty(HoveredCellInfo) && !HasSelectedCell;
@@ -792,12 +793,11 @@ namespace WorldBuilder.Editors.Dungeon {
             IsDraggingCell = false;
             IsDraggingObject = false;
         }
-
         private void UpdateCursorHud(MouseState mouseState) {
             if (_scene?.Camera == null) return;
             var ray = EditingContext.ComputeRay(mouseState);
             if (ray == null) {
-                ShowCursorHud = false;
+                if (ShowCursorHud) ShowCursorHud = false;
                 return;
             }
             var hit = EditingContext.Raycast(ray.Value.origin, ray.Value.direction);
@@ -805,11 +805,12 @@ namespace WorldBuilder.Editors.Dungeon {
                 var p = hit.HitPosition;
                 var roomName = EditingContext.RoomPalette?.GetRoomDisplayName(hit.Cell.EnvironmentId, (ushort)hit.Cell.GpuKey.CellStructure);
                 var label = !string.IsNullOrEmpty(roomName) ? roomName : $"Env 0x{hit.Cell.EnvironmentId:X4}";
-                CursorHudText = $"({p.X:F1}, {p.Y:F1}, {p.Z:F1})  {label}";
-                ShowCursorHud = true;
+                var newText = $"({p.X:F1}, {p.Y:F1}, {p.Z:F1})  {label}";
+                if (newText != CursorHudText) CursorHudText = newText;
+                if (!ShowCursorHud) ShowCursorHud = true;
             }
             else {
-                ShowCursorHud = false;
+                if (ShowCursorHud) ShowCursorHud = false;
             }
         }
 
@@ -984,7 +985,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             var kb = DungeonKnowledgeBuilder.LoadCached();
             if (kb == null) {
-                StatusText = "Knowledge base not loaded — run Analyze Rooms first";
+                StatusText = "Knowledge base not loaded ΓÇö run Analyze Rooms first";
                 return;
             }
 
@@ -995,7 +996,7 @@ namespace WorldBuilder.Editors.Dungeon {
             var catalogEntry = kb.Catalog.FirstOrDefault(c => c.EnvId == firstDc.EnvironmentId && c.CellStruct == firstDc.CellStructure);
             var style = catalogEntry?.Style;
             if (string.IsNullOrEmpty(style)) {
-                StatusText = "Could not determine style from selected room — try a different room";
+                StatusText = "Could not determine style from selected room ΓÇö try a different room";
                 return;
             }
 
@@ -1076,7 +1077,7 @@ namespace WorldBuilder.Editors.Dungeon {
             };
             RoomPalette.SetActiveOpenPortals(singlePortal);
             RoomPalette.ShowCompatibleOnly = true;
-            StatusText = $"Palette filtered to portal — {entry.CompatibleCount} compatible pieces";
+            StatusText = $"Palette filtered to portal ΓÇö {entry.CompatibleCount} compatible pieces";
         }
 
         [RelayCommand]
@@ -1250,7 +1251,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private void OnObjectPlacementRequested(object? sender, Landscape.ViewModels.ObjectBrowserItem item) {
             if (item.WeenieClassId.HasValue && item.Id == 0) {
                 NewPlacementWcid = item.WeenieClassId.Value.ToString();
-                StatusText = $"Weenie {item.WeenieClassId.Value} has no 3D model — use Instance Placements panel to place manually.";
+                StatusText = $"Weenie {item.WeenieClassId.Value} has no 3D model ΓÇö use Instance Placements panel to place manually.";
                 return;
             }
 
@@ -1490,7 +1491,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             var kb = DungeonKnowledgeBuilder.LoadCached();
             if (kb == null || kb.Prefabs.Count == 0) {
-                StatusText = "Knowledge base not ready — try again after it finishes building";
+                StatusText = "Knowledge base not ready ΓÇö try again after it finishes building";
                 return;
             }
 
@@ -1502,7 +1503,7 @@ namespace WorldBuilder.Editors.Dungeon {
             int added = RoomPalette.AddPrefabFavorites(matchingSigs);
 
             StatusText = added > 0
-                ? $"Favorited {added} individual pieces ({roomTypes.Count} room types) — use Generate from Favorites"
+                ? $"Favorited {added} individual pieces ({roomTypes.Count} room types) ΓÇö use Generate from Favorites"
                 : $"All matching pieces already favorited ({roomTypes.Count} room types)";
             Console.WriteLine($"[Dungeon] FavoriteDungeonPieces: LB {_loadedLandblockKey:X4}, {roomTypes.Count} room types, {added} new favorites");
         }
@@ -1531,7 +1532,7 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             RoomPalette.AddCustomPrefab(prefab);
-            StatusText = $"Saved whole dungeon as \"{prefab.DisplayName}\" ({prefab.Cells.Count} cells) — added to favorites";
+            StatusText = $"Saved whole dungeon as \"{prefab.DisplayName}\" ({prefab.Cells.Count} cells) ΓÇö added to favorites";
             Console.WriteLine($"[Dungeon] FavoriteDungeonWhole: LB {_loadedLandblockKey:X4}, {prefab.Cells.Count} cells, sig={prefab.Signature[..Math.Min(30, prefab.Signature.Length)]}...");
         }
 
@@ -1646,10 +1647,10 @@ namespace WorldBuilder.Editors.Dungeon {
             var kb = DungeonKnowledgeBuilder.LoadCached();
             if (kb == null || kb.Edges.Count == 0) {
                 if (RoomPalette?.IsBuildingKnowledgeBase == true) {
-                    StatusText = "Knowledge base is rebuilding — please wait for it to finish, then try again";
+                    StatusText = "Knowledge base is rebuilding ΓÇö please wait for it to finish, then try again";
                 }
                 else {
-                    StatusText = "Knowledge base needs rebuilding — restarting the editor will trigger an automatic rebuild";
+                    StatusText = "Knowledge base needs rebuilding ΓÇö restarting the editor will trigger an automatic rebuild";
                 }
                 return;
             }
@@ -1671,7 +1672,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 var generated = await Task.Run(() => DungeonGenerator.Generate(result, allRooms, _dats, lbKey));
 
                 if (generated == null || generated.Cells.Count == 0) {
-                    StatusText = "Generation failed — not enough adjacency data for this style";
+                    StatusText = "Generation failed ΓÇö not enough adjacency data for this style";
                     return;
                 }
 
@@ -1699,7 +1700,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 opts.Add(branchLabels[Math.Clamp(result.Branching, 0, 2)]);
                 opts.Add(sizeLabels[Math.Clamp(result.RoomSize, 0, 2)]);
                 var optsStr = opts.Count > 0 ? $" [{string.Join(", ", opts)}]" : "";
-                var valStr = valErrors > 0 ? $"  ({valErrors} errors, {valWarnings} warnings — run Validate)"
+                var valStr = valErrors > 0 ? $"  ({valErrors} errors, {valWarnings} warnings ΓÇö run Validate)"
                            : valWarnings > 0 ? $"  ({valWarnings} warnings)"
                            : "";
                 StatusText = $"Generated size {CellCount} ({openPortals} open doorways){optsStr}.{valStr}";
@@ -1748,8 +1749,8 @@ namespace WorldBuilder.Editors.Dungeon {
 
             int openPortalCount = CountOpenPortals();
             PlacementStatusText = openPortalCount > 0
-                ? $"Room placed! {openPortalCount} open doorway{(openPortalCount != 1 ? "s" : "")} — pick another room from the catalog"
-                : "Room placed! No open doorways — disconnect one to continue building";
+                ? $"Room placed! {openPortalCount} open doorway{(openPortalCount != 1 ? "s" : "")} ΓÇö pick another room from the catalog"
+                : "Room placed! No open doorways ΓÇö disconnect one to continue building";
         }
 
         private int CountOpenPortals() {
@@ -1773,7 +1774,7 @@ namespace WorldBuilder.Editors.Dungeon {
             RefreshInstancePlacementList();
             HasDungeon = true;
             CellCount = 0;
-            StatusText = $"New dungeon — pick a room from the catalog to start building";
+            StatusText = $"New dungeon ΓÇö pick a room from the catalog to start building";
 
             // Position camera at the landblock's world-space position (where cells will render)
             var blockX = (lbKey >> 8) & 0xFF;
@@ -1818,7 +1819,7 @@ namespace WorldBuilder.Editors.Dungeon {
             RefreshRendering();
             _needsCameraFocus = true;
 
-            StatusText = $"{_document.Cells.Count} rooms — select next room from catalog";
+            StatusText = $"{_document.Cells.Count} rooms ΓÇö select next room from catalog";
             CellCount = _document.Cells.Count;
 
             StayInPlacementMode();
@@ -1870,7 +1871,7 @@ namespace WorldBuilder.Editors.Dungeon {
             // Find nearest cell with an open portal (smart search, not just raycast hit)
             var bestCell = FindNearestOpenPortalCell(rayOrigin, rayDir);
             if (bestCell == null) {
-                PlacementStatusText = "No open doorways — select a room and disconnect a doorway to create one";
+                PlacementStatusText = "No open doorways ΓÇö select a room and disconnect a doorway to create one";
                 Console.WriteLine("[Dungeon] TrySnapToPortal: no cells with open portals found");
                 return;
             }
@@ -1910,7 +1911,7 @@ namespace WorldBuilder.Editors.Dungeon {
             RefreshRendering();
 
             CellCount = _document.Cells.Count;
-            StatusText = $"{CellCount} rooms — select next room or click to place again";
+            StatusText = $"{CellCount} rooms ΓÇö select next room or click to place again";
 
             StayInPlacementMode();
         }

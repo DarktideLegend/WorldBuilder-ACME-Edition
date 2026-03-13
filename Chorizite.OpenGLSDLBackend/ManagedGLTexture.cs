@@ -31,9 +31,7 @@ namespace Chorizite.OpenGLSDLBackend {
             GL.BindTexture(GLEnum.Texture2D, _texture);
             GLHelpers.CheckErrors();
 
-            // Get the pixel data from the ImageSharp bitmap
-            byte[] pixelData = new byte[width * height * 4];
-
+            byte[] pixelData = source ?? new byte[width * height * 4];
 
             fixed (byte* data = &pixelData[0]) {
                 GL.TexImage2D(GLEnum.Texture2D, 0, (int)InternalFormat.Rgba8, (uint)width, (uint)height, 0, PixelFormat.Rgba, (PixelType)0x1401, data);

@@ -1,4 +1,4 @@
-﻿using Chorizite.Core.Render;
+using Chorizite.Core.Render;
 using Silk.NET.OpenGL;
 using System;
 using System.Collections.Generic;
@@ -37,7 +37,7 @@ namespace Chorizite.OpenGLSDLBackend {
             );
 
             // Create and attach a depth-stencil renderbuffer if requested
-            if (true || hasDepthStencil) {
+            if (hasDepthStencil) {
                 _depthStencilRenderbuffer = _gl.GenRenderbuffer();
                 _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthStencilRenderbuffer);
                 _gl.RenderbufferStorage(

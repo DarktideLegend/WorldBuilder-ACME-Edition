@@ -323,8 +323,7 @@ public class CommandHistory {
                 var mergedCommand = MergeCommands(oldest.Command, next.Command);
                 var newEntry = new HistoryEntry(mergedCommand) {
                     Description = next.Description,
-                    Timestamp = next.Timestamp,
-                    AffectedDocumentIds = next.AffectedDocumentIds // Preserve document IDs
+                    Timestamp = next.Timestamp
                 };
                 _history[1] = newEntry;
                 _history.RemoveAt(0);

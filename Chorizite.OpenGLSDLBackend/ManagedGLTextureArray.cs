@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 
 namespace Chorizite.OpenGLSDLBackend {
     public class ManagedGLTextureArray : ITextureArray {
-        private readonly bool[] _usedLayers;
+        private bool[] _usedLayers;
         private readonly GL GL;
         private static int _nextId;
         private bool _needsMipmapRegeneration;
@@ -242,6 +242,61 @@ namespace Chorizite.OpenGLSDLBackend {
                     _mipmapDirtyCount++; // Mark dirty to regen
                 }
             }
+        }
+
+        public void Grow(int newSize) {
+            if (newSize <= Size)
+                throw new ArgumentException($"New size {newSize} must be greater than current size {Size}.");
+
+            uint newTex = GL.GenTexture();
+            GL.BindTexture(GLEnum.Texture2DArray, newTex);
+
+            int maxDimension = Math.Max(Width, Height);
+            int mipLevels = _isCompressed ? 1 : (int)Math.Floor(Math.Log2(maxDimension)) + 1;
+
+            GL.TexStorage3D(GLEnum.Texture2DArray, (uint)mipLevels, Format.ToGL(), (uint)Width, (uint)Height, (uint)newSize);
+            GLHelpers.CheckErrorsWithContext($"Growing texture array from {Size} to {newSize}");
+
+            if (_isCompressed) {
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureMaxLevel, 0);
+            }
+            else {
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear);
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureMaxLevel, mipLevels - 1);
+            }
+
+            GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+            GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+
+            if (Format == TextureFormat.A8) {
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureSwizzleR, (int)GLEnum.One);
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureSwizzleG, (int)GLEnum.One);
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureSwizzleB, (int)GLEnum.One);
+                GL.TexParameter(GLEnum.Texture2DArray, TextureParameterName.TextureSwizzleA, (int)GLEnum.Red);
+            }
+
+            for (int i = 0; i < Size; i++) {
+                if (_usedLayers[i]) {
+                    GL.CopyImageSubData(
+                        (uint)NativePtr, GLEnum.Texture2DArray, 0, 0, 0, i,
+                        newTex, GLEnum.Texture2DArray, 0, 0, 0, i,
+                        (uint)Width, (uint)Height, 1);
+                }
+            }
+            GLHelpers.CheckErrorsWithContext("Copying layers during texture array growth");
+
+            GL.DeleteTexture((uint)NativePtr);
+            NativePtr = (nint)newTex;
+
+            var newUsedLayers = new bool[newSize];
+            Array.Copy(_usedLayers, newUsedLayers, Size);
+            _usedLayers = newUsedLayers;
+            Size = newSize;
+
+            _needsMipmapRegeneration = true;
+            lock (_mipmapLock) { _mipmapDirtyCount++; }
         }
 
         public bool IsLayerUsed(int layer) {

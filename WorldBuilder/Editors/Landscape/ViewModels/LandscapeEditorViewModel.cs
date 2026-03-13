@@ -1,4 +1,4 @@
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Input;
@@ -281,8 +281,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 canvasSize.Width,
                 canvasSize.Height);
 
-            // Update Position HUD if active — cursor-based update in HandleViewportInput
-            // takes priority; this camera fallback only applies when cursor isn't over terrain.
+            // Update Position HUD — cursor-based update in HandleViewportInput takes priority.
 
             // Tool Overlay?
             // Currently RenderToolOverlay was in View.
@@ -1011,7 +1010,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             // If only a landblock ID was given (no cell), go to overworld
             if (lbId == 0 && cellPart != 0) {
-                // Input was 4-char hex like "C6AC" — treat cellPart as the landblock ID
+                // Input was 4-char hex like "C6AC" ΓÇö treat cellPart as the landblock ID
                 NavigateToLandblock(cellPart);
                 return;
             }
@@ -1190,7 +1189,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             if (string.IsNullOrWhiteSpace(input)) return null;
             input = input.Trim();
 
-            // Try X,Y format → landblock only
+            // Try X,Y format ΓåÆ landblock only
             if (input.Contains(',')) {
                 var parts = input.Split(',');
                 if (parts.Length == 2
@@ -1206,14 +1205,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             if (hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
                 hex = hex[2..];
 
-            // 8-char hex → full cell ID (e.g. 01D90108 → landblock 0x01D9, cell 0x0108)
+            // 8-char hex ΓåÆ full cell ID (e.g. 01D90108 ΓåÆ landblock 0x01D9, cell 0x0108)
             if (hex.Length > 4 && hex.Length <= 8) {
                 if (uint.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullId))
                     return fullId;
                 return null;
             }
 
-            // 1-4 char hex → landblock only (e.g. C6AC → 0x0000C6AC)
+            // 1-4 char hex ΓåÆ landblock only (e.g. C6AC ΓåÆ 0x0000C6AC)
             if (ushort.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var lbId))
                 return lbId;
 
@@ -1228,7 +1227,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             var selectSubTool = selectorTool.AllSubTools.OfType<SelectSubToolViewModel>().FirstOrDefault();
             if (selectSubTool == null) return;
 
-            // Save placement state — tool deactivation clears it
+            // Save placement state ΓÇö tool deactivation clears it
             var sel = TerrainSystem?.EditingContext.ObjectSelection;
             var wasPlacing = sel?.IsPlacementMode ?? false;
             var preview = sel?.PlacementPreview;

@@ -105,10 +105,9 @@ namespace WorldBuilder.Editors.Landscape.Views {
 
             double arrowSize = clamped ? 8.0 : 6.0;
 
-            // Draw a triangle arrow pointing in the camera's yaw direction
-            // Yaw=0 is facing +X (east), increases clockwise
-            // In screen coords, +X is right, +Y is down, north (+Y world) is screen up
-            double angle = -yaw; // negate because screen Y is inverted
+            // Yaw is in degrees (CCW from +X). Convert to radians for trig.
+            // Screen Y inversion is handled by the (sy - sin) pattern below.
+            double angle = yaw * Math.PI / 180.0;
 
             double tipX = sx + Math.Cos(angle) * arrowSize;
             double tipY = sy - Math.Sin(angle) * arrowSize;

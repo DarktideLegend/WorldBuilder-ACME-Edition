@@ -46,24 +46,9 @@ namespace WorldBuilder.Editors.Landscape {
                 index = _nextIndex++;
                 var managedArray = TextureArray as ManagedGLTextureArray;
                 if (managedArray != null && index >= managedArray.Size) {
-                    throw new Exception($"Texture atlas is full!. {managedArray.Size} / {_nextIndex} used.");
-                    /*
-                    // This is not implemented yet
-                    // Grow the array
                     int newSize = managedArray.Size * 2;
-                    var newArray = _renderer.GraphicsDevice.CreateTextureArray(_format, _textureWidth, _textureHeight, newSize);
-
-                    // Copy existing textures to new array
-                    for (int i = 0; i < managedArray.Size; i++) {
-                        if (_refCounts.ContainsKey(i)) {
-                            byte[] layerData = managedArray.GetLayerData(i); // Assume this method exists to download layer data
-                            newArray.UpdateLayer(i, layerData);
-                        }
-                    }
-
-                    managedArray.Dispose();
-                    TextureArray = newArray;
-                    */
+                    Console.WriteLine($"Texture atlas full ({managedArray.Size} slots), growing to {newSize}");
+                    managedArray.Grow(newSize);
                 }
             }
 

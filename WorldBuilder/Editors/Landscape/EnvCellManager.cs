@@ -630,7 +630,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             switch (renderSurface.Format) {
                 case DatReaderWriter.Enums.PixelFormat.PFID_A8R8G8B8:
-                    uploadPixelFormat = PixelFormat.Rgba;
+                    uploadPixelFormat = PixelFormat.Bgra;
                     textureData = renderSurface.SourceData;
                     break;
                 case DatReaderWriter.Enums.PixelFormat.PFID_R8G8B8:

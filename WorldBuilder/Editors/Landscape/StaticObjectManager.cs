@@ -81,6 +81,12 @@ namespace WorldBuilder.Editors.Landscape {
         private void UnloadObject(uint key) {
             if (!_renderData.TryGetValue(key, out var data)) return;
 
+            if (data.IsSetup) {
+                foreach (var (partId, _) in data.SetupParts) {
+                    ReleaseRenderData(partId, false);
+                }
+            }
+
             var gl = _renderer.GraphicsDevice.GL;
             if (data.VAO != 0) gl.DeleteVertexArray(data.VAO);
             if (data.VBO != 0) gl.DeleteBuffer(data.VBO);
@@ -95,7 +101,6 @@ namespace WorldBuilder.Editors.Landscape {
 
             _renderData.Remove(key);
 
-            // Invalidate cached bounds for this object
             _boundsCache.TryRemove((key, true), out _);
             _boundsCache.TryRemove((key, false), out _);
         }
@@ -664,7 +669,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             switch (renderSurface.Format) {
                 case DatReaderWriter.Enums.PixelFormat.PFID_A8R8G8B8:
-                    uploadPixelFormat = PixelFormat.Rgba;
+                    uploadPixelFormat = PixelFormat.Bgra;
                     textureData = renderSurface.SourceData;
                     break;
                 case DatReaderWriter.Enums.PixelFormat.PFID_R8G8B8:
