@@ -191,6 +191,33 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             Context.TerrainSystem.Scene.InvalidateStaticObjectsCache();
         }
 
+        [RelayCommand]
+        private void AlignToSurface() {
+            if (_suppressPropertyUpdates || !HasEditableSelection) return;
+            var sel = Context.ObjectSelection;
+            if (!sel.HasSelection || sel.IsScenery || sel.SelectedObjectIndex < 0) return;
+
+            var doc = GetDocument();
+            if (doc == null) return;
+
+            var obj = doc.GetStaticObject(sel.SelectedObjectIndex);
+            var normal = Context.GetTerrainNormal(obj.Origin.X, obj.Origin.Y);
+            var surfaceRot = TerrainEditingContext.AlignToNormal(normal);
+
+            // Preserve the object's existing yaw (Z rotation) while aligning pitch/roll to surface
+            QuaternionToEuler(obj.Orientation, out _, out _, out float existingYaw);
+            var yawRot = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, existingYaw * MathF.PI / 180f);
+            var newRot = Quaternion.Normalize(surfaceRot * yawRot);
+
+            if (Quaternion.Dot(obj.Orientation, newRot) > 0.9999f) return;
+
+            var cmd = new RotateObjectCommand(Context, sel.SelectedLandblockKey, sel.SelectedObjectIndex, obj.Orientation, newRot);
+            _commandHistory.ExecuteCommand(cmd);
+            sel.RefreshFromDocument(doc);
+            Context.TerrainSystem.Scene.InvalidateStaticObjectsCache();
+            UpdateSelectionInfo();
+        }
+
         /// <summary>
         /// Converts a quaternion to Euler angles (degrees) in XYZ order.
         /// </summary>
@@ -269,7 +296,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     // Building-specific placement: cell-center snapping, donor orientation, terrain flattening.
                     // Non-building objects (scenery, trees, etc.) are placed at the exact click position.
                     var dats = Context.TerrainSystem.Dats;
-                    bool isBuilding = dats != null && BuildingBlueprintCache.IsBuildingModelId(preview.Id, dats);
+                    bool isBuilding = !preview.IsParticleEmitter && dats != null && BuildingBlueprintCache.IsBuildingModelId(preview.Id, dats);
 
                     if (isBuilding) {
                         // Snap to the center of the nearest outdoor cell (24x24 grid).
@@ -303,7 +330,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                         IsSetup = preview.IsSetup,
                         Origin = placementPos,
                         Orientation = orientation,
-                        Scale = preview.Scale
+                        Scale = preview.Scale,
+                        IsParticleEmitter = preview.IsParticleEmitter
                     };
 
                     // Flatten terrain under buildings only — scenery objects sit on existing terrain.
@@ -328,11 +356,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             // Normal selection (Ctrl+Click = toggle multi-select)
             if (mouseState.ObjectHit.HasValue && mouseState.ObjectHit.Value.Hit) {
+                var hit = mouseState.ObjectHit.Value;
+
+                if (hit.IsScenery) {
+                    hit = PromoteSceneryToDocument(hit);
+                }
+
                 if (mouseState.CtrlPressed) {
-                    Context.ObjectSelection.ToggleSelectFromHit(mouseState.ObjectHit.Value);
+                    Context.ObjectSelection.ToggleSelect(hit.Object, hit.LandblockKey, hit.ObjectIndex, hit.IsScenery);
                 }
                 else {
-                    Context.ObjectSelection.SelectFromHit(mouseState.ObjectHit.Value);
+                    Context.ObjectSelection.Select(hit.Object, hit.LandblockKey, hit.ObjectIndex, hit.IsScenery);
                 }
                 return true;
             }
@@ -397,7 +431,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     IsSetup = preview.IsSetup,
                     Origin = terrainPos,
                     Orientation = preview.Orientation,
-                    Scale = preview.Scale
+                    Scale = preview.Scale,
+                    IsParticleEmitter = preview.IsParticleEmitter
                 };
             }
             return false;
@@ -421,7 +456,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             }
 
             foreach (var hit in hits) {
-                sel.ToggleSelect(hit.Object, hit.LandblockKey, hit.ObjectIndex, hit.IsScenery);
+                var h = hit;
+                if (h.IsScenery) h = PromoteSceneryToDocument(h);
+                sel.ToggleSelect(h.Object, h.LandblockKey, h.ObjectIndex, h.IsScenery);
             }
 
             Console.WriteLine($"[Selector] Marquee selected {hits.Count} object(s)");
@@ -432,6 +469,22 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         /// Only applies to known building models. Uses the model's bounding box to determine
         /// the rectangular footprint.
         /// </summary>
+        private ObjectRaycast.ObjectRaycastHit PromoteSceneryToDocument(ObjectRaycast.ObjectRaycastHit hit) {
+            var cmd = new AddObjectCommand(Context, hit.LandblockKey, hit.Object);
+            _commandHistory.ExecuteCommand(cmd);
+            Context.TerrainSystem.Scene.InvalidateStaticObjectsCache();
+
+            return new ObjectRaycast.ObjectRaycastHit {
+                Hit = true,
+                Object = hit.Object,
+                LandblockKey = hit.LandblockKey,
+                ObjectIndex = cmd.AddedIndex,
+                Distance = hit.Distance,
+                HitPosition = hit.HitPosition,
+                IsScenery = false
+            };
+        }
+
         /// <summary>
         /// Returns the snapped Z height (from the height table) or null if flattening didn't apply.
         /// </summary>

@@ -15,6 +15,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
 using System.Threading.Tasks;
 using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Editors.Landscape.Commands;
@@ -26,6 +27,7 @@ using WorldBuilder.Lib.Settings;
 using WorldBuilder.Shared.Documents;
 using DatReaderWriter.DBObjs;
 using WorldBuilder.Shared.Lib;
+using WorldBuilder.Shared.Lib.AceDb;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
 
@@ -96,6 +98,27 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             set { Settings.Landscape.Overlay.ShowBuildingInteriors = value; OnPropertyChanged(); }
         }
 
+        public bool ShowWeenieSpawns {
+            get => Settings.Landscape.Overlay.ShowWeenieSpawns;
+            set {
+                Settings.Landscape.Overlay.ShowWeenieSpawns = value;
+                OnPropertyChanged();
+                if (value) {
+                    LoadWeenieSpawnsForLoadedLandblocks();
+                }
+                else {
+                    _weenieLoadedLandblocks.Clear();
+                    _weenieLoadingLandblocks.Clear();
+                    TerrainSystem?.Scene?.ClearAllWeenieSpawns();
+                }
+            }
+        }
+
+        public bool ShowParticles {
+            get => Settings.Landscape.Overlay.ShowParticles;
+            set { Settings.Landscape.Overlay.ShowParticles = value; OnPropertyChanged(); }
+        }
+
         public bool ShowSlopeHighlight {
             get => Settings.Landscape.Overlay.ShowSlopeHighlight;
             set { Settings.Landscape.Overlay.ShowSlopeHighlight = value; OnPropertyChanged(); }
@@ -120,6 +143,16 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private Project? _project;
         private IDatReaderWriter? _dats;
         public TerrainSystem? TerrainSystem { get; private set; }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<uint, uint> _weenieSetupCache = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ushort, byte> _weenieLoadedLandblocks = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ushort, byte> _weenieLoadingLandblocks = new();
+
+        /// <summary>
+        /// Limits parallel landblock spawn queries so many open docs do not exhaust the MySQL connector pool
+        /// (Connect Timeout / all pooled connections in use).
+        /// </summary>
+        private static readonly SemaphoreSlim WeenieSpawnDbConcurrency = new(initialCount: 8, maxCount: 8);
         /// <summary>Current project (for ACE outdoor instance placements).</summary>
         public Project? Project => _project;
         public WorldBuilderSettings Settings { get; }
@@ -193,6 +226,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 () => TerrainSystem.Scene.ThumbnailService,
                 settings: Settings);
             ObjectBrowser.PlacementRequested += OnPlacementRequested;
+            ObjectBrowser.WeenieSetupsLoaded += OnWeenieSetupsLoaded;
 
             TexturePalette = new TerrainTexturePaletteViewModel(TerrainSystem.Scene.SurfaceManager, _textureImport);
             TexturePalette.TextureSelected += OnPaletteTextureSelected;
@@ -202,6 +236,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             LeftPanelContent = ObjectBrowser;
             LeftPanelTitle = "Object Browser";
+
+            TerrainSystem.Scene.LandblockIntegrated += OnLandblockIntegrated;
 
             InitDocking();
         }
@@ -361,7 +397,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     DeleteSelectedObject();
                     break;
                 case Avalonia.Input.Key.Escape:
-                    TerrainSystem?.EditingContext.ObjectSelection.Deselect();
+                    var escSel = TerrainSystem?.EditingContext.ObjectSelection;
+                    if (escSel != null && escSel.IsPlacementMode) {
+                        escSel.IsPlacementMode = false;
+                        escSel.PlacementPreview = null;
+                        escSel.PlacementPreviewMulti = null;
+                    } else {
+                        escSel?.Deselect();
+                    }
                     TerrainSystem?.Scene.InvalidateStaticObjectsCache();
                     break;
                 case Avalonia.Input.Key.G:
@@ -664,6 +707,325 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             TerrainSystem.Scene.InvalidateStaticObjectsCache();
             TerrainSystem.Scene.ClearAllCaches();
+        }
+
+        [RelayCommand]
+        private async Task GenerateWorld() {
+            if (TerrainSystem == null || _dats == null) return;
+
+            byte[]? minimapData = null;
+            try {
+                minimapData = new byte[254 * 254];
+                for (int x = 0; x < 254; x++) {
+                    for (int y = 0; y < 254; y++) {
+                        var terrain = TerrainSystem.GetLandblockTerrain((ushort)((x << 8) | y));
+                        minimapData[y * 254 + x] = terrain != null ? terrain[40].Height : (byte)0;
+                    }
+                }
+            }
+            catch { minimapData = null; }
+
+            var p = await WorldGen.WorldGeneratorDialogService.ShowDialog(minimapData);
+            if (p == null) return;
+
+            var region = TerrainSystem.Region;
+            var progressText = new Avalonia.Controls.TextBlock {
+                Text = "Starting generation...",
+                FontSize = 13, TextWrapping = Avalonia.Media.TextWrapping.Wrap, MaxWidth = 400
+            };
+            var progressDialog = new Avalonia.Controls.StackPanel {
+                Margin = new Avalonia.Thickness(24),
+                Spacing = 10,
+                Children = {
+                    new Avalonia.Controls.TextBlock {
+                        Text = "Generating World...",
+                        FontSize = 16,
+                        FontWeight = Avalonia.Media.FontWeight.Bold
+                    },
+                    progressText,
+                    new Avalonia.Controls.ProgressBar { IsIndeterminate = true, Width = 300 }
+                }
+            };
+
+            var dialogTask = DialogHost.Show(progressDialog, "MainDialogHost");
+
+            var dats = _dats;
+            WorldGen.WorldGeneratorResult? result = null;
+            try {
+                result = await Task.Run(() => {
+                    return WorldGen.WorldGenerator.Generate(p, dats, region, msg => {
+                        Avalonia.Threading.Dispatcher.UIThread.Post(() => progressText.Text = msg);
+                    });
+                });
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[WorldGen] Error: {ex.Message}");
+            }
+
+            DialogHost.Close("MainDialogHost");
+            await dialogTask;
+
+            if (result == null) return;
+
+            TerrainSystem.DocumentManager.SkipDatStatics = true;
+
+            foreach (var doc in TerrainSystem.DocumentManager.ActiveDocs.Values) {
+                if (doc is LandblockDocument lbDoc) {
+                    lbDoc.ClearAllStatics();
+                }
+            }
+
+            TerrainSystem.TerrainDoc.ApplyBulkImport(result.TerrainChanges);
+
+            // Place buildings as StaticObjects first (always visible as exterior).
+            // Attempt blueprint instantiation for interiors; failures are fine --
+            // LandblockDocument.SaveToDatsInternal will retry at save time.
+            int blueprintSuccess = 0, blueprintFail = 0;
+            var lbiCache = new Dictionary<ushort, (DatReaderWriter.DBObjs.LandBlockInfo lbi, uint numCells)>();
+
+            foreach (var (lbKey, plannedBuildings) in result.BuildingPlacements) {
+                var docId = $"landblock_{lbKey:X4}";
+                var lbDoc = await TerrainSystem.DocumentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId);
+
+                foreach (var planned in plannedBuildings) {
+                    // Always add the exterior StaticObject so the building is visible
+                    lbDoc.AddStaticObject(new StaticObject {
+                        Id = planned.ModelId,
+                        IsSetup = (planned.ModelId & 0x02000000) != 0,
+                        Origin = planned.WorldPosition,
+                        Orientation = planned.Orientation,
+                        Scale = Vector3.One
+                    });
+
+                    // Try to instantiate blueprint for immediate interior
+                    try {
+                        var blueprint = BuildingBlueprintCache.GetBlueprint(planned.ModelId, _dats!);
+                        if (blueprint != null && blueprint.Cells.Count > 0) {
+                            uint lbId = lbKey;
+                            if (!lbiCache.TryGetValue(lbKey, out var cached)) {
+                                uint infoId = (lbId << 16) | 0xFFFE;
+                                if (!_dats!.TryGet<DatReaderWriter.DBObjs.LandBlockInfo>(infoId, out var lbi)) {
+                                    lbi = new DatReaderWriter.DBObjs.LandBlockInfo { Id = infoId };
+                                }
+                                cached = (lbi, lbi.NumCells);
+                                lbiCache[lbKey] = cached;
+                            }
+
+                            uint lbX = (uint)((lbKey >> 8) & 0xFF);
+                            uint lbY = (uint)(lbKey & 0xFF);
+                            var localOrigin = new Vector3(
+                                planned.WorldPosition.X - lbX * 192f,
+                                planned.WorldPosition.Y - lbY * 192f,
+                                planned.WorldPosition.Z);
+
+                            var instantiated = BuildingBlueprintCache.InstantiateBlueprint(
+                                blueprint, localOrigin, planned.Orientation,
+                                lbId, cached.numCells, _dats!, iteration: 0, logger: null);
+
+                            if (instantiated.HasValue) {
+                                cached.lbi.Buildings.Add(instantiated.Value.building);
+                                cached = (cached.lbi, cached.numCells + (uint)instantiated.Value.cellCount);
+                                lbiCache[lbKey] = cached;
+                                blueprintSuccess++;
+                            } else {
+                                blueprintFail++;
+                            }
+                        } else {
+                            blueprintFail++;
+                        }
+                    } catch (Exception ex) {
+                        Console.WriteLine($"[WorldGen] Blueprint error for 0x{planned.ModelId:X8}: {ex.Message}");
+                        blueprintFail++;
+                    }
+                }
+            }
+
+            // Save LandBlockInfos that got blueprint buildings
+            foreach (var (lbKey, cached) in lbiCache) {
+                cached.lbi.NumCells = cached.numCells;
+                _dats!.TrySave(cached.lbi, iteration: 0);
+            }
+
+            // Add decorations as regular static objects
+            foreach (var (lbKey, decorObjects) in result.DecorationPlacements) {
+                var docId = $"landblock_{lbKey:X4}";
+                var doc = await TerrainSystem.DocumentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId);
+                foreach (var obj in decorObjects) {
+                    doc.AddStaticObject(obj);
+                }
+            }
+
+            TerrainSystem.Scene.InvalidateStaticObjectsCache();
+            TerrainSystem.Scene.ClearAllCaches();
+
+            // Queue all new building + decoration models for warmup so they render
+            var warmupIds = new HashSet<(uint id, bool isSetup)>();
+            foreach (var planned in result.BuildingPlacements.Values.SelectMany(x => x)) {
+                warmupIds.Add((planned.ModelId, (planned.ModelId & 0x02000000) != 0));
+            }
+            foreach (var obj in result.DecorationPlacements.Values.SelectMany(x => x)) {
+                warmupIds.Add((obj.Id, obj.IsSetup));
+            }
+            foreach (var item in warmupIds) {
+                TerrainSystem.Scene.QueueModelWarmup(item.id, item.isSetup);
+            }
+
+            Console.WriteLine($"[WorldGen] Applied: {result.TotalVerticesModified} terrain vertices, " +
+                $"{result.Towns.Count} towns, {blueprintSuccess} buildings (blueprinted), " +
+                $"{blueprintFail} failed, {result.TotalDecorationsPlaced} decorations, " +
+                $"{result.TotalRoadVertices} road vertices, {warmupIds.Count} models queued for warmup");
+
+            await ShowWorldGenSummary(result);
+        }
+
+        private async Task ShowWorldGenSummary(WorldGen.WorldGeneratorResult result) {
+            var townRows = new StackPanel { Spacing = 2 };
+            foreach (var t in result.Towns) {
+                townRows.Children.Add(new TextBlock {
+                    Text = $"{t.Name}  ({t.SizeLabel})  —  LB ({t.CenterLbX}, {t.CenterLbY})  —  {t.BuildingCount} buildings",
+                    FontSize = 12,
+                    FontFamily = new FontFamily("Consolas, Courier New, monospace")
+                });
+            }
+
+            var panel = new StackPanel {
+                Margin = new Avalonia.Thickness(24),
+                Spacing = 12,
+                Children = {
+                    new TextBlock {
+                        Text = "World Generation Complete",
+                        FontSize = 16, FontWeight = FontWeight.Bold
+                    },
+                    new TextBlock {
+                        Text = $"{result.TotalVerticesModified:N0} terrain vertices  ·  " +
+                               $"{result.Towns.Count} settlements  ·  " +
+                               $"{result.TotalBuildingsPlaced} buildings (with interiors)  ·  " +
+                               $"{result.TotalDecorationsPlaced} decorations  ·  " +
+                               $"{result.TotalRoadVertices} road vertices",
+                        FontSize = 12, Foreground = Brushes.Gray
+                    },
+                    new Avalonia.Controls.Separator(),
+                    new TextBlock { Text = "Settlements", FontSize = 13, FontWeight = FontWeight.SemiBold },
+                    new ScrollViewer {
+                        MaxHeight = 300,
+                        Content = townRows
+                    }
+                }
+            };
+
+            var exportBtn = new Button {
+                Content = "Export Towns CSV",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Padding = new Avalonia.Thickness(12, 6)
+            };
+            var closeBtn = new Button {
+                Content = "Close",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Padding = new Avalonia.Thickness(16, 6)
+            };
+
+            var buttonRow = new StackPanel {
+                Orientation = Avalonia.Layout.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Spacing = 10,
+                Children = { exportBtn, closeBtn }
+            };
+            panel.Children.Add(buttonRow);
+
+            exportBtn.Click += async (_, _) => {
+                await ExportTownsCsv(result);
+            };
+            closeBtn.Click += (_, _) => {
+                DialogHost.Close("MainDialogHost");
+            };
+
+            await DialogHost.Show(panel, "MainDialogHost");
+        }
+
+        private async Task ExportTownsCsv(WorldGen.WorldGeneratorResult result) {
+            try {
+                var topLevel = Avalonia.Application.Current?.ApplicationLifetime is
+                    Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
+                    ? desktop.MainWindow : null;
+                if (topLevel == null) return;
+
+                var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions {
+                    Title = "Export Towns CSV",
+                    SuggestedFileName = "towns.csv",
+                    FileTypeChoices = new[] {
+                        new FilePickerFileType("CSV Files") { Patterns = new[] { "*.csv" } }
+                    }
+                });
+                if (file == null) return;
+
+                using var stream = await file.OpenWriteAsync();
+                using var writer = new System.IO.StreamWriter(stream);
+                await writer.WriteLineAsync("Name,Size,Buildings,LandblockHex,OutdoorCellHex,TeleLoc");
+                foreach (var t in result.Towns) {
+                    var anchor = GetTownTelelocAnchor(t, result.BuildingPlacements);
+                    var (lbKey, cellHex, teleloc) = BuildAceTeleLoc(anchor.X, anchor.Y, anchor.Z);
+                    string escName = t.Name.Replace("\"", "\"\"", StringComparison.Ordinal);
+                    await writer.WriteLineAsync(
+                        $"\"{escName}\",{t.SizeLabel},{t.BuildingCount},0x{lbKey:X4},0x{cellHex:X4},\"{teleloc}\"");
+                }
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[WorldGen] CSV export error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Prefer centroid of buildings in this settlement so @teleloc lands among structures,
+        /// not an empty landblock center.
+        /// </summary>
+        private static Vector3 GetTownTelelocAnchor(WorldGen.TownSite town,
+            Dictionary<ushort, List<WorldGen.PlannedBuilding>> placements) {
+            var pts = new List<Vector3>();
+            foreach (var list in placements.Values) {
+                foreach (var pb in list) {
+                    if (!string.Equals(pb.TownName, town.Name, StringComparison.Ordinal))
+                        continue;
+                    pts.Add(pb.WorldPosition);
+                }
+            }
+
+            if (pts.Count == 0)
+                return town.WorldCenter;
+
+            float sx = 0f, sy = 0f, sz = 0f;
+            foreach (var p in pts) {
+                sx += p.X;
+                sy += p.Y;
+                sz += p.Z;
+            }
+
+            float n = pts.Count;
+            return new Vector3(sx / n, sy / n, sz / n);
+        }
+
+        /// <summary>
+        /// ACE / @teleloc outdoor format: full id = (landblockKey * 65536) | outdoorCellId,
+        /// landblockKey = (lbX * 256) | lbY. Bracket coords are landblock-local X/Y and world Z.
+        /// Outdoor cells use indices 1..64; we clamp to inner cells 1..6 like the placement tool.
+        /// </summary>
+        private static (ushort landblockKey, ushort outdoorCell, string telelocLine) BuildAceTeleLoc(
+            float worldX, float worldY, float worldZ) {
+
+            int lbX = Math.Clamp((int)Math.Floor(worldX / 192f), 0, 254);
+            int lbY = Math.Clamp((int)Math.Floor(worldY / 192f), 0, 254);
+            float localX = worldX - lbX * 192f;
+            float localY = worldY - lbY * 192f;
+
+            int cellX = Math.Clamp((int)(localX / 24f), 1, 6);
+            int cellY = Math.Clamp((int)(localY / 24f), 1, 6);
+            ushort outdoorCell = (ushort)(cellX * 8 + cellY + 1);
+            ushort lbKey = (ushort)((lbX << 8) | lbY);
+            uint fullId = ((uint)lbKey << 16) | outdoorCell;
+
+            string teleloc = string.Format(CultureInfo.InvariantCulture,
+                "0x{0:X8} [{1:F6} {2:F6} {3:F6}] 1.000000 0.000000 0.000000 0.000000",
+                fullId, localX, localY, worldZ);
+            return (lbKey, outdoorCell, teleloc);
         }
 
         private async Task<bool> ShowFreshStartConfirmation() {
@@ -988,7 +1350,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 Origin = src.Origin + new Vector3(24f, 24f, 0),
                 Orientation = src.Orientation,
                 Scale = src.Scale,
-                IsSetup = src.IsSetup
+                IsSetup = src.IsSetup,
+                IsParticleEmitter = src.IsParticleEmitter
             };
             var cmd = new Commands.AddObjectCommand(TerrainSystem.EditingContext, _copiedObjectLandblock, duplicate);
             TerrainSystem.History?.ExecuteCommand(cmd);
@@ -1250,6 +1613,129 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 return lbId;
 
             return null;
+        }
+
+        private void OnWeenieSetupsLoaded(object? sender, IReadOnlyList<(uint WeenieClassId, uint SetupId)> mappings) {
+            bool anyNew = false;
+            foreach (var (wcid, setupId) in mappings) {
+                if (setupId != 0 && _weenieSetupCache.TryAdd(wcid, setupId))
+                    anyNew = true;
+            }
+            if (anyNew) {
+                ReloadAllWeenieSpawns();
+            }
+        }
+
+        private void OnLandblockIntegrated(ushort lbKey) {
+            if (!ShowWeenieSpawns) return;
+            _ = LoadWeenieSpawnsForLandblockAsync(lbKey);
+        }
+
+        private void LoadWeenieSpawnsForLoadedLandblocks() {
+            var scene = TerrainSystem?.Scene;
+            if (scene == null) return;
+            var docMgr = TerrainSystem?.DocumentManager;
+            if (docMgr == null) return;
+
+            int count = 0;
+            foreach (var docId in docMgr.ActiveDocs.Keys) {
+                if (!docId.StartsWith("landblock_")) continue;
+                var hex = docId.Replace("landblock_", "");
+                if (ushort.TryParse(hex, NumberStyles.HexNumber, null, out var lbKey)) {
+                    _ = LoadWeenieSpawnsForLandblockAsync(lbKey);
+                    count++;
+                }
+            }
+            Console.WriteLine($"[Spawns] Toggle ON — queued {count} landblocks for weenie spawn loading");
+        }
+
+        private void ReloadAllWeenieSpawns() {
+            foreach (var lbKey in _weenieLoadedLandblocks.Keys.ToList()) {
+                _weenieLoadedLandblocks.TryRemove(lbKey, out _);
+                _ = LoadWeenieSpawnsForLandblockAsync(lbKey);
+            }
+        }
+
+        private async Task LoadWeenieSpawnsForLandblockAsync(ushort lbKey) {
+            if (_weenieLoadedLandblocks.ContainsKey(lbKey)) return;
+            if (!_weenieLoadingLandblocks.TryAdd(lbKey, 0)) return;
+
+            await WeenieSpawnDbConcurrency.WaitAsync();
+            try {
+                var aceConn = Settings?.AceDbConnection;
+                if (aceConn == null || string.IsNullOrWhiteSpace(aceConn.Host)) {
+                    Console.WriteLine($"[Spawns] No ACE DB configured — cannot load weenie spawns");
+                    return;
+                }
+
+                var aceSettings = aceConn.ToAceDbSettings();
+                using var connector = new AceDbConnector(aceSettings);
+
+                var err = await connector.TestConnectionAsync();
+                if (err != null) {
+                    Console.WriteLine($"[Spawns] DB connection failed: {err}");
+                    return;
+                }
+
+                var records = await connector.GetInstancesAsync(
+                    lbKey, cellMin: 1, cellMax: 64, includeAngles: true);
+                if (records.Count == 0) {
+                    _weenieLoadedLandblocks.TryAdd(lbKey, 0);
+                    return;
+                }
+
+                var wcids = records.Select(r => r.WeenieClassId).Distinct().ToList();
+                var missingWcids = wcids.Where(w => !_weenieSetupCache.ContainsKey(w)).ToList();
+                if (missingWcids.Count > 0) {
+                    var newSetups = await connector.GetSetupDidsAsync(missingWcids);
+                    foreach (var (wcid, setupId) in newSetups) {
+                        if (setupId != 0)
+                            _weenieSetupCache.TryAdd(wcid, setupId);
+                    }
+                    Console.WriteLine($"[Spawns] Resolved {newSetups.Count}/{missingWcids.Count} Setup DIDs for {lbKey:X4}");
+                }
+
+                int blockX = (lbKey >> 8) & 0xFF;
+                int blockY = lbKey & 0xFF;
+                var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
+
+                var spawns = new List<StaticObject>();
+                int noSetup = 0;
+                foreach (var r in records) {
+                    if (!_weenieSetupCache.TryGetValue(r.WeenieClassId, out var setupId) || setupId == 0) {
+                        noSetup++;
+                        continue;
+                    }
+
+                    bool isSetup = (setupId & 0x02000000) != 0;
+                    var orientation = (r.AnglesW.HasValue)
+                        ? new Quaternion(r.AnglesX ?? 0f, r.AnglesY ?? 0f, r.AnglesZ ?? 0f, r.AnglesW.Value)
+                        : Quaternion.Identity;
+
+                    spawns.Add(new StaticObject {
+                        Id = setupId,
+                        IsSetup = isSetup,
+                        Origin = new Vector3(r.OriginX, r.OriginY, r.OriginZ) + lbOffset,
+                        Orientation = orientation,
+                        Scale = Vector3.One
+                    });
+                }
+
+                if (spawns.Count > 0) {
+                    TerrainSystem?.Scene.SetWeenieSpawns(lbKey, spawns);
+                    TerrainSystem?.Scene.InvalidateStaticObjectsCache();
+                }
+
+                _weenieLoadedLandblocks.TryAdd(lbKey, 0);
+                Console.WriteLine($"[Spawns] {lbKey:X4}: {spawns.Count} rendered, {noSetup} missing model, {records.Count} total DB rows");
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[Spawns] Failed for {lbKey:X4}: {ex.Message}");
+            }
+            finally {
+                WeenieSpawnDbConcurrency.Release();
+                _weenieLoadingLandblocks.TryRemove(lbKey, out _);
+            }
         }
 
         private void OnPlacementRequested(object? sender, EventArgs e) {

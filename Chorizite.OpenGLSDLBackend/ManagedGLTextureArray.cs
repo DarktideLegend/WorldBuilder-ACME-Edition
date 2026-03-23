@@ -35,14 +35,16 @@ namespace Chorizite.OpenGLSDLBackend {
             _usedLayers = new bool[size];
             GL = graphicsDevice.GL;
             _isCompressed = IsCompressedFormat(format);
-            GLHelpers.CheckErrors();
+            // Drain any pre-existing GL errors using the LOCAL GL object so we never
+            // accidentally read from a different context via the global GLHelpers.Device.
+            while (GL.GetError() != GLEnum.NoError) { }
 
             NativePtr = (nint)GL.GenTexture();
             if (NativePtr == 0) {
-                throw new InvalidOperationException("Failed to generate texture array.");
+                var glErr = GL.GetError();
+                throw new InvalidOperationException(
+                    $"Failed to generate texture array (format={format}, {width}x{height}x{size}). GL error: {glErr}");
             }
-
-            GLHelpers.CheckErrors();
 
             GL.BindTexture(GLEnum.Texture2DArray, (uint)NativePtr);
             GLHelpers.CheckErrors();

@@ -1,4 +1,4 @@
-﻿using Chorizite.Core.Render;
+using Chorizite.Core.Render;
 using Chorizite.Core.Render.Enums;
 using Chorizite.Core.Render.Vertex;
 using Microsoft.Extensions.Logging;
@@ -22,7 +22,13 @@ namespace Chorizite.OpenGLSDLBackend {
             _log = log;
 
             GL = gl;
-            GLHelpers.Init(this, log);
+            // Only initialise the global GLHelpers device for the first/primary renderer.
+            // Secondary renderers (e.g. standalone preview panels) must not overwrite the primary
+            // context's device — GLHelpers.CheckErrors() dispatches via the global, and overwriting
+            // it causes GL.GenTexture() to return 0 on secondary ANGLE contexts.
+            if (GLHelpers.Device == null) {
+                GLHelpers.Init(this, log);
+            }
         }
 
         /// <inheritdoc />

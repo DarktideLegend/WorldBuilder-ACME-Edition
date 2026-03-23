@@ -165,15 +165,25 @@ namespace WorldBuilder.Lib.Settings {
         private bool _showBuildingInteriors = false;
         public bool ShowBuildingInteriors { get => _showBuildingInteriors; set => SetProperty(ref _showBuildingInteriors, value); }
 
-        [SettingDescription("Highlight unwalkable slopes with a color overlay")]
+        [SettingDescription("Show weenie spawns from ACE database (creatures, NPCs, generators, etc.)")]
         [SettingOrder(4)]
+        private bool _showWeenieSpawns = false;
+        public bool ShowWeenieSpawns { get => _showWeenieSpawns; set => SetProperty(ref _showWeenieSpawns, value); }
+
+        [SettingDescription("Show simulated particle effects from placed particle emitters")]
+        [SettingOrder(5)]
+        private bool _showParticles = true;
+        public bool ShowParticles { get => _showParticles; set => SetProperty(ref _showParticles, value); }
+
+        [SettingDescription("Highlight unwalkable slopes with a color overlay")]
+        [SettingOrder(6)]
         private bool _showSlopeHighlight = false;
         public bool ShowSlopeHighlight { get => _showSlopeHighlight; set => SetProperty(ref _showSlopeHighlight, value); }
 
         [SettingDescription("Slope angle threshold in degrees above which terrain is considered unwalkable")]
         [SettingRange(5.0, 85.0, 1.0, 5.0)]
         [SettingFormat("{0:F0}°")]
-        [SettingOrder(5)]
+        [SettingOrder(7)]
         private float _slopeThreshold = 45f;
         public float SlopeThreshold { get => _slopeThreshold; set => SetProperty(ref _slopeThreshold, value); }
 
@@ -186,7 +196,7 @@ namespace WorldBuilder.Lib.Settings {
         [SettingDescription("Opacity of the slope highlight overlay")]
         [SettingRange(0.0, 1.0, 0.05, 0.1)]
         [SettingFormat("{0:P0}")]
-        [SettingOrder(7)]
+        [SettingOrder(9)]
         private float _slopeHighlightOpacity = 0.5f;
         public float SlopeHighlightOpacity { get => _slopeHighlightOpacity; set => SetProperty(ref _slopeHighlightOpacity, value); }
     }
@@ -238,6 +248,16 @@ namespace WorldBuilder.Lib.Settings {
         [SettingOrder(4)]
         private bool _snapToTerrain = true;
         public bool SnapToTerrain { get => _snapToTerrain; set => SetProperty(ref _snapToTerrain, value); }
+
+        [SettingDescription("Align object orientation to terrain surface normal")]
+        [SettingOrder(5)]
+        private bool _alignToSurface = false;
+        public bool AlignToSurface { get => _alignToSurface; set => SetProperty(ref _alignToSurface, value); }
+
+        [SettingDescription("Apply transforms in object-local space instead of world space")]
+        [SettingOrder(6)]
+        private bool _useLocalSpace = false;
+        public bool UseLocalSpace { get => _useLocalSpace; set => SetProperty(ref _useLocalSpace, value); }
     }
 
     /// <summary>

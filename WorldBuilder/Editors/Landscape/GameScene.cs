@@ -2,6 +2,7 @@ using Chorizite.ACProtocol.Types;
 using Chorizite.Core.Render;
 using Chorizite.Core.Render.Vertex;
 using Chorizite.OpenGLSDLBackend;
+using DatReaderWriter;
 using DatReaderWriter.DBObjs;
 using Silk.NET.OpenGL;
 using System;
@@ -57,6 +58,9 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly Dictionary<ushort, List<StaticObject>> _sceneryObjects = new();
         private readonly Dictionary<ushort, List<StaticObject>> _dungeonStaticObjects = new();
         private readonly Dictionary<ushort, List<StaticObject>> _buildingStaticObjects = new();
+        private readonly ConcurrentDictionary<ushort, List<StaticObject>> _weenieSpawnObjects = new();
+        private readonly ConcurrentQueue<(uint Id, bool IsSetup)> _pendingModelWarmup = new();
+        private DateTime _lastSpawnDiag = DateTime.MinValue;
         private readonly Dictionary<ushort, List<uint>> _dungeonStaticParentCells = new();
         private readonly Dictionary<ushort, List<uint>> _buildingStaticParentCells = new();
         internal readonly TerrainSystem _terrainSystem;
@@ -76,15 +80,23 @@ namespace WorldBuilder.Editors.Landscape {
         private bool _cachedShowScenery = true;
         private bool _cachedShowDungeons = true;
         private bool _cachedShowBuildingInteriors = false;
+        private bool _cachedShowWeenieSpawns = false;
         private ushort? _cachedFocusedDungeonLB = null;
         private uint _lastCameraCellId;
         private int _lastVisibleCellCount = -1;
+        private int _lastVisibleCellHash;
 
         // Reusable collections
         private readonly Dictionary<(uint Id, bool IsSetup), List<Matrix4x4>> _objectGroupBuffer = new();
         private readonly List<Matrix4x4> _tempInstanceTransforms = new();
         private readonly List<StaticObject> _visibleObjectsBuffer = new();
         private readonly List<Matrix4x4> _visibleTransformsBuffer = new();
+
+        private readonly Dictionary<(ushort LbKey, int Index), AcParticleEmitterSimulator> _particleEmitters = new();
+        private readonly List<Matrix4x4> _particleInstanceScratch = new();
+        private readonly List<StaticObject> _particleDrawObjects = new();
+        private readonly List<Matrix4x4> _particleDrawTransforms = new();
+        private double _lastParticleWallSeconds = -1;
 
         private struct BatchDrawEntry {
             public uint VAO;
@@ -112,6 +124,7 @@ namespace WorldBuilder.Editors.Landscape {
         // Expose object manager for tools (uses any available context)
         public StaticObjectManager? AnyObjectManager => _contexts.Values.FirstOrDefault()?.ObjectManager;
         internal EnvCellManager? _envCellManager => _contexts.Values.FirstOrDefault()?.EnvCellManager;
+        internal TransformGizmo? _gizmo => _contexts.Values.FirstOrDefault()?.Gizmo;
 
         private record BackgroundLoadResult(ushort LbKey, string DocId, List<StaticObject> Scenery, HashSet<(uint Id, bool IsSetup)> UniqueObjectIds, long LoadMs, long SceneryMs, int SceneryCount, PreparedEnvCellBatch? EnvCellBatch = null);
 
@@ -178,6 +191,16 @@ namespace WorldBuilder.Editors.Landscape {
         public bool ShowBuildingInteriors {
             get => _settings.Landscape.Overlay.ShowBuildingInteriors;
             set => _settings.Landscape.Overlay.ShowBuildingInteriors = value;
+        }
+
+        public bool ShowWeenieSpawns {
+            get => _settings.Landscape.Overlay.ShowWeenieSpawns;
+            set => _settings.Landscape.Overlay.ShowWeenieSpawns = value;
+        }
+
+        public bool ShowParticles {
+            get => _settings.Landscape.Overlay.ShowParticles;
+            set => _settings.Landscape.Overlay.ShowParticles = value;
         }
 
         public bool ShowSlopeHighlight {
@@ -277,6 +300,7 @@ namespace WorldBuilder.Editors.Landscape {
             var requiredChunks = DataManager.GetRequiredChunks(cameraPosition);
 
             IntegrateBackgroundLoadResults();
+            DrainPendingModelWarmup();
             RetryMissingEnvCells(cameraPosition);
             ProcessPendingSceneryRegen();
 
@@ -394,7 +418,31 @@ namespace WorldBuilder.Editors.Landscape {
 
                 _staticObjectsDirty = true;
                 integrated++;
+                LandblockIntegrated?.Invoke(result.LbKey);
             }
+        }
+
+        private void DrainPendingModelWarmup() {
+            if (_pendingModelWarmup.IsEmpty) return;
+            int queued = 0;
+            int alreadyCached = 0;
+            int failed = 0;
+            while (_pendingModelWarmup.TryDequeue(out var item)) {
+                foreach (var context in _contexts.Values) {
+                    if (context.ObjectManager.TryGetCachedRenderData(item.Id) != null) {
+                        alreadyCached++;
+                    }
+                    else if (context.ObjectManager.IsKnownFailure(item.Id)) {
+                        failed++;
+                    }
+                    else {
+                        context.ModelWarmupQueue.Enqueue(item);
+                        queued++;
+                    }
+                }
+            }
+            if (queued > 0 || failed > 0)
+                Console.WriteLine($"[Spawns] DrainWarmup: {queued} queued, {alreadyCached} already cached, {failed} known failures, {_contexts.Count} context(s)");
         }
 
         /// <summary>
@@ -540,10 +588,10 @@ namespace WorldBuilder.Editors.Landscape {
 
                             var uniqueIds = new HashSet<(uint, bool)>();
                             foreach (var obj in doc.GetStaticObjects()) {
-                                uniqueIds.Add((obj.Id, obj.IsSetup));
+                                AddWarmupIdsForStaticObject(dats, obj, uniqueIds);
                             }
                             foreach (var obj in scenery) {
-                                uniqueIds.Add((obj.Id, obj.IsSetup));
+                                AddWarmupIdsForStaticObject(dats, obj, uniqueIds);
                             }
 
                             PreparedEnvCellBatch? envCellBatch = null;
@@ -616,10 +664,22 @@ namespace WorldBuilder.Editors.Landscape {
                     if (_documentManager.ActiveDocs.TryGetValue(docId, out var baseDoc) && baseDoc is LandblockDocument lbDoc) {
                         foreach (var obj in lbDoc.GetStaticObjects()) {
                             foreach (var context in _contexts.Values) {
-                                context.ObjectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
+                                if (obj.IsParticleEmitter) {
+                                    if (TryGetParticleGfxId(_dats, obj.Id, out var pg))
+                                        context.ObjectManager.ReleaseRenderData(pg, false);
+                                }
+                                else {
+                                    context.ObjectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
+                                }
                             }
                         }
                     }
+
+                    var rm = new List<(ushort, int)>();
+                    foreach (var k in _particleEmitters.Keys) {
+                        if (k.LbKey == lbKey) rm.Add(k);
+                    }
+                    foreach (var k in rm) _particleEmitters.Remove(k);
 
                     foreach (var context in _contexts.Values) {
                         context.EnvCellManager.UnloadLandblock(lbKey);
@@ -642,6 +702,13 @@ namespace WorldBuilder.Editors.Landscape {
                         }
                         _buildingStaticObjects.Remove(lbKey);
                         _buildingStaticParentCells.Remove(lbKey);
+                    }
+                    if (_weenieSpawnObjects.TryRemove(lbKey, out var weenieObjs)) {
+                        foreach (var obj in weenieObjs) {
+                            foreach (var context in _contexts.Values) {
+                                context.ObjectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
+                            }
+                        }
                     }
 
                     _ = _documentManager.CloseDocumentAsync(docId);
@@ -701,6 +768,7 @@ namespace WorldBuilder.Editors.Landscape {
                     _buildingStaticObjects.Remove(lbKey);
                     _buildingStaticParentCells.Remove(lbKey);
                 }
+                _weenieSpawnObjects.TryRemove(lbKey, out _);
                 _staticObjectsDirty = true;
             }
         }
@@ -842,21 +910,31 @@ namespace WorldBuilder.Editors.Landscape {
 
             if (batch.Count == 0) return;
 
+            Console.WriteLine($"[Spawns] KickOffModelPrep: preparing {batch.Count} models ({string.Join(",", batch.Select(b => $"0x{b.Id:X8}"))})");
+
             var objectManager = context.ObjectManager;
             var resultQueue = context.ModelUploadQueue;
 
             _modelPrepTask = Task.Run(() => {
+                int ok = 0, fail = 0;
                 foreach (var (id, isSetup) in batch) {
                     try {
                         var data = objectManager.PrepareModelData(id, isSetup);
                         if (data != null) {
                             resultQueue.Enqueue(data);
+                            ok++;
+                        }
+                        else {
+                            fail++;
+                            Console.WriteLine($"[Spawns] PrepareModelData returned null for 0x{id:X8} (isSetup={isSetup})");
                         }
                     }
                     catch (Exception ex) {
+                        fail++;
                         Console.WriteLine($"[Statics] Background prep error for 0x{id:X8}: {ex.Message}");
                     }
                 }
+                Console.WriteLine($"[Spawns] ModelPrep batch done: {ok} ok, {fail} failed");
             });
         }
 
@@ -891,7 +969,7 @@ namespace WorldBuilder.Editors.Landscape {
                             long sceneryMs = sw.ElapsedMilliseconds;
 
                             var uniqueIds = new HashSet<(uint, bool)>();
-                            foreach (var obj in doc.GetStaticObjects()) uniqueIds.Add((obj.Id, obj.IsSetup));
+                            foreach (var obj in doc.GetStaticObjects()) AddWarmupIdsForStaticObject(dats, obj, uniqueIds);
                             foreach (var obj in scenery) uniqueIds.Add((obj.Id, obj.IsSetup));
 
                             resultQueue.Enqueue(new BackgroundLoadResult(lbKey, docId, scenery, uniqueIds, 0, sceneryMs, scenery.Count));
@@ -919,6 +997,7 @@ namespace WorldBuilder.Editors.Landscape {
             var lbGlobalY = lbId & 0xFF;
 
             foreach (var b in lbDoc.GetStaticObjects()) {
+                if (b.IsParticleEmitter) continue;
                 var localX = b.Origin.X - lbGlobalX * 192f;
                 var localY = b.Origin.Y - lbGlobalY * 192f;
                 var cellX = (int)MathF.Floor(localX / 24f);
@@ -1220,10 +1299,14 @@ namespace WorldBuilder.Editors.Landscape {
             if (visibility != null) {
                 uint camCellId = visibility.CameraCell?.CellId ?? 0;
                 int visCellCount = visibility.VisibleCellIds.Count;
-                if (camCellId != _lastCameraCellId || visCellCount != _lastVisibleCellCount) {
+                int visHash = 0;
+                foreach (var id in visibility.VisibleCellIds)
+                    visHash = unchecked(visHash * 31 + (int)id);
+                if (camCellId != _lastCameraCellId || visCellCount != _lastVisibleCellCount || visHash != _lastVisibleCellHash) {
                     visibilityChanged = true;
                     _lastCameraCellId = camCellId;
                     _lastVisibleCellCount = visCellCount;
+                    _lastVisibleCellHash = visHash;
                 }
             }
 
@@ -1232,6 +1315,7 @@ namespace WorldBuilder.Editors.Landscape {
                 || _cachedShowScenery != ShowScenery
                 || _cachedShowDungeons != ShowDungeons
                 || _cachedShowBuildingInteriors != ShowBuildingInteriors
+                || _cachedShowWeenieSpawns != ShowWeenieSpawns
                 || _cachedFocusedDungeonLB != focusedLB
                 || visibilityChanged) {
                 var statics = new List<StaticObject>();
@@ -1242,6 +1326,9 @@ namespace WorldBuilder.Editors.Landscape {
                 }
                 if (ShowScenery) {
                     statics.AddRange(_sceneryObjects.Values.SelectMany(x => x));
+                }
+                if (ShowWeenieSpawns) {
+                    statics.AddRange(_weenieSpawnObjects.Values.SelectMany(x => x));
                 }
 
                 if (ShowDungeons || ShowBuildingInteriors) {
@@ -1286,6 +1373,7 @@ namespace WorldBuilder.Editors.Landscape {
                 _cachedShowScenery = ShowScenery;
                 _cachedShowDungeons = ShowDungeons;
                 _cachedShowBuildingInteriors = ShowBuildingInteriors;
+                _cachedShowWeenieSpawns = ShowWeenieSpawns;
                 _cachedFocusedDungeonLB = focusedLB;
                 _staticObjectsDirty = false;
             }
@@ -1293,6 +1381,125 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         public void InvalidateStaticObjectsCache() {
+            _staticObjectsDirty = true;
+            _particleEmitters.Clear();
+        }
+
+        static bool TryGetParticleGfxId(IDatReaderWriter dats, uint emitterDid, out uint gfxId) =>
+            AcParticleEmitterSimulator.TryResolveVisualGfxObjectIdFromPortal(dats, emitterDid, out gfxId);
+
+        bool TryGetStaticDrawModel(StaticObject obj, out uint modelId, out bool isSetup) {
+            if (!obj.IsParticleEmitter) {
+                modelId = obj.Id;
+                isSetup = obj.IsSetup;
+                return true;
+            }
+            if (!TryGetParticleGfxId(_dats, obj.Id, out modelId)) {
+                isSetup = false;
+                return false;
+            }
+            isSetup = false;
+            return modelId != 0;
+        }
+
+        static void AddWarmupIdsForStaticObject(IDatReaderWriter dats, StaticObject obj, HashSet<(uint Id, bool IsSetup)> uniqueIds) {
+            if (obj.IsParticleEmitter) {
+                if (TryGetParticleGfxId(dats, obj.Id, out var g))
+                    uniqueIds.Add((g, false));
+            }
+            else {
+                uniqueIds.Add((obj.Id, obj.IsSetup));
+            }
+        }
+
+        bool ParticleAnchorInFrustum(SceneContext context, StaticObject anchor, Matrix4x4 worldTransform, Frustum frustum) {
+            if (!TryGetParticleGfxId(_dats, anchor.Id, out var gfxId)) return true;
+            var localBounds = context.ObjectManager.GetBounds(gfxId, false);
+            if (!localBounds.HasValue) return true;
+            var (localMin, localMax) = localBounds.Value;
+            var worldMin = new Vector3(float.MaxValue);
+            var worldMax = new Vector3(float.MinValue);
+            for (int ci = 0; ci < 8; ci++) {
+                var corner = new Vector3(
+                    (ci & 1) == 0 ? localMin.X : localMax.X,
+                    (ci & 2) == 0 ? localMin.Y : localMax.Y,
+                    (ci & 4) == 0 ? localMin.Z : localMax.Z);
+                var wc = Vector3.Transform(corner, worldTransform);
+                worldMin = Vector3.Min(worldMin, wc);
+                worldMax = Vector3.Max(worldMax, wc);
+            }
+            return frustum.IntersectsBoundingBox(new Chorizite.Core.Lib.BoundingBox(worldMin, worldMax));
+        }
+
+        void CollectParticleDraws(SceneContext context, Frustum frustum, double wallSeconds, float deltaTime) {
+            _particleDrawObjects.Clear();
+            _particleDrawTransforms.Clear();
+            if (!ShowParticles)
+                return;
+            foreach (var kv in _documentManager.ActiveDocs) {
+                if (kv.Value is not LandblockDocument lbDoc) continue;
+                if (!kv.Key.StartsWith("landblock_", StringComparison.Ordinal)) continue;
+                if (!ushort.TryParse(kv.Key.Replace("landblock_", "", StringComparison.Ordinal), System.Globalization.NumberStyles.HexNumber, null, out var lbKey)) continue;
+
+                for (int i = 0; i < lbDoc.StaticObjectCount; i++) {
+                    var obj = lbDoc.GetStaticObject(i);
+                    if (!obj.IsParticleEmitter) continue;
+                    if (!TryGetParticleGfxId(_dats, obj.Id, out var gfxId)) continue;
+
+                    var anchorWorld = Matrix4x4.CreateScale(obj.Scale)
+                        * Matrix4x4.CreateFromQuaternion(obj.Orientation)
+                        * Matrix4x4.CreateTranslation(obj.Origin);
+                    if (!ParticleAnchorInFrustum(context, obj, anchorWorld, frustum)) continue;
+
+                    var key = (lbKey, i);
+                    if (!_particleEmitters.TryGetValue(key, out var sim) || sim.EmitterId != obj.Id) {
+                        sim = new AcParticleEmitterSimulator();
+                        if (!sim.TryLoad(_dats, obj.Id)) continue;
+                        sim.Begin(wallSeconds, anchorWorld);
+                        _particleEmitters[key] = sim;
+                    }
+
+                    sim.Advance(wallSeconds, deltaTime, anchorWorld, _particleInstanceScratch);
+                    foreach (var wm in _particleInstanceScratch) {
+                        _particleDrawObjects.Add(new StaticObject {
+                            Id = gfxId,
+                            IsSetup = false,
+                            Origin = default,
+                            Orientation = Quaternion.Identity,
+                            Scale = Vector3.One,
+                            IsParticleEmitter = false
+                        });
+                        _particleDrawTransforms.Add(wm);
+                    }
+                }
+            }
+        }
+
+        public void QueueModelWarmup(uint modelId, bool isSetup) {
+            _pendingModelWarmup.Enqueue((modelId, isSetup));
+        }
+
+        public event Action<ushort>? LandblockIntegrated;
+
+        public void SetWeenieSpawns(ushort lbKey, List<StaticObject> spawns) {
+            _weenieSpawnObjects[lbKey] = spawns;
+            var uniqueIds = new HashSet<uint>();
+            foreach (var obj in spawns) {
+                if (uniqueIds.Add(obj.Id)) {
+                    _pendingModelWarmup.Enqueue((obj.Id, obj.IsSetup));
+                }
+            }
+            _staticObjectsDirty = true;
+            Console.WriteLine($"[Spawns] SetWeenieSpawns({lbKey:X4}): {spawns.Count} objects, {uniqueIds.Count} unique models queued for warmup");
+        }
+
+        public void ClearWeenieSpawns(ushort lbKey) {
+            _weenieSpawnObjects.TryRemove(lbKey, out _);
+            _staticObjectsDirty = true;
+        }
+
+        public void ClearAllWeenieSpawns() {
+            _weenieSpawnObjects.Clear();
             _staticObjectsDirty = true;
         }
 
@@ -1348,6 +1555,7 @@ namespace WorldBuilder.Editors.Landscape {
                 _cachedNonDungeonStatics = null;
                 _cachedDungeonStatics = null;
                 _staticObjectsDirty = true;
+                _particleEmitters.Clear();
 
                 DataManager.ClearChunks();
 
@@ -1480,6 +1688,8 @@ namespace WorldBuilder.Editors.Landscape {
             _visibleObjectsBuffer.Clear();
             _visibleTransformsBuffer.Clear();
             foreach (var obj in allObjects) {
+                if (obj.IsParticleEmitter) continue;
+
                 var worldTransform = Matrix4x4.CreateScale(obj.Scale)
                     * Matrix4x4.CreateFromQuaternion(obj.Orientation)
                     * Matrix4x4.CreateTranslation(obj.Origin);
@@ -1512,9 +1722,29 @@ namespace WorldBuilder.Editors.Landscape {
                     _visibleTransformsBuffer.Add(worldTransform);
                 }
             }
+            if (ShowWeenieSpawns && DateTime.UtcNow - _lastSpawnDiag > TimeSpan.FromSeconds(5)) {
+                _lastSpawnDiag = DateTime.UtcNow;
+                int weenieTotal = _weenieSpawnObjects.Values.Sum(v => v.Count);
+                int allCount = allObjects.Count();
+                int visCount = _visibleObjectsBuffer.Count;
+                int noRenderData = 0;
+                foreach (var obj in _visibleObjectsBuffer) {
+                    if (context.ObjectManager.TryGetCachedRenderData(obj.Id) == null) noRenderData++;
+                }
+                Console.WriteLine($"[Spawns] RENDER DIAG: weenieStore={weenieTotal}, allStatics={allCount}, visible={visCount}, noRenderData={noRenderData}, warmupQ={context.ModelWarmupQueue.Count}, uploadQ={context.ModelUploadQueue.Count}, preparing={context.ModelsPreparing.Count}");
+            }
             if (_visibleObjectsBuffer.Count > 0) {
                 RenderStaticObjectsPreTransformed(context, _visibleObjectsBuffer, _visibleTransformsBuffer, camera, viewProjection);
             }
+
+            double wallSec = System.Environment.TickCount64 / 1000.0;
+            float pDt = _lastParticleWallSeconds < 0 ? 1f / 60f : (float)(wallSec - _lastParticleWallSeconds);
+            _lastParticleWallSeconds = wallSec;
+            CollectParticleDraws(context, frustum, wallSec, Math.Clamp(pDt, 0f, 0.25f));
+            if (_particleDrawObjects.Count > 0) {
+                RenderStaticObjectsPreTransformed(context, _particleDrawObjects, _particleDrawTransforms, camera, viewProjection, additiveBlend: true);
+            }
+
             long renderStaticsMs = renderSw.ElapsedMilliseconds;
             if (renderStaticsMs > 200) {
                 Console.WriteLine($"[GameScene.Render] Static objects: {renderStaticsMs}ms ({_visibleObjectsBuffer.Count} objects)");
@@ -1523,6 +1753,7 @@ namespace WorldBuilder.Editors.Landscape {
             if (editingContext.ObjectSelection.HasSelection) {
                 RenderSelectionGlow(context, editingContext.ObjectSelection, camera, viewProjection);
                 RenderSelectionHighlight(context, editingContext.ObjectSelection, camera, viewProjection);
+                RenderTransformGizmo(context, editingContext.ObjectSelection, camera, viewProjection);
             }
 
             if (editingContext.ObjectSelection.IsPlacementMode && editingContext.ObjectSelection.PlacementPreview.HasValue) {
@@ -1596,7 +1827,8 @@ namespace WorldBuilder.Editors.Landscape {
             var allInstances = new List<Vector4>();
             foreach (var entry in selection.SelectedEntries.ToList()) {
                 var obj = entry.Object;
-                var bounds = context.ObjectManager.GetBounds(obj.Id, obj.IsSetup);
+                if (!TryGetStaticDrawModel(obj, out var mid, out var mSetup)) continue;
+                var bounds = context.ObjectManager.GetBounds(mid, mSetup);
                 if (bounds == null) continue;
 
                 var (localMin, localMax) = bounds.Value;
@@ -1725,6 +1957,55 @@ namespace WorldBuilder.Editors.Landscape {
             gl.Disable(EnableCap.Blend);
         }
 
+        private void RenderTransformGizmo(SceneContext context, ObjectSelectionState selection, ICamera camera, Matrix4x4 viewProjection) {
+            if (!selection.HasSelection || selection.HasEnvCellSelection || selection.IsPlacementMode || !selection.HasEditableEntry) return;
+            var entries = selection.SelectedEntries;
+            if (entries.Count == 0) return;
+
+            var gizmo = context.Gizmo;
+            gizmo.UseLocalSpace = _settings.Landscape.Snap.UseLocalSpace;
+
+            // Compute gizmo center (centroid of all selected objects)
+            var center = Vector3.Zero;
+            foreach (var e in entries) center += e.Object.Origin;
+            center /= entries.Count;
+
+            // Use first object's orientation for local-space gizmo
+            var orientation = entries.Count == 1 ? entries[0].Object.Orientation : Quaternion.Identity;
+
+            var gl = context.Renderer.GraphicsDevice.GL;
+            gizmo.Render(gl, viewProjection, camera, center, orientation, true);
+
+            // Render wireframe bounding boxes for each selected object
+            foreach (var entry in entries) {
+                var obj = entry.Object;
+                if (!TryGetStaticDrawModel(obj, out var gMid, out var gSetup)) continue;
+                var bounds = context.ObjectManager.GetBounds(gMid, gSetup);
+                if (bounds == null) continue;
+                var (localMin, localMax) = bounds.Value;
+                var worldTransform = Matrix4x4.CreateScale(obj.Scale)
+                    * Matrix4x4.CreateFromQuaternion(obj.Orientation)
+                    * Matrix4x4.CreateTranslation(obj.Origin);
+
+                var worldCorners = new Vector3[8];
+                worldCorners[0] = Vector3.Transform(new(localMin.X, localMin.Y, localMin.Z), worldTransform);
+                worldCorners[1] = Vector3.Transform(new(localMax.X, localMin.Y, localMin.Z), worldTransform);
+                worldCorners[2] = Vector3.Transform(new(localMax.X, localMax.Y, localMin.Z), worldTransform);
+                worldCorners[3] = Vector3.Transform(new(localMin.X, localMax.Y, localMin.Z), worldTransform);
+                worldCorners[4] = Vector3.Transform(new(localMin.X, localMin.Y, localMax.Z), worldTransform);
+                worldCorners[5] = Vector3.Transform(new(localMax.X, localMin.Y, localMax.Z), worldTransform);
+                worldCorners[6] = Vector3.Transform(new(localMax.X, localMax.Y, localMax.Z), worldTransform);
+                worldCorners[7] = Vector3.Transform(new(localMin.X, localMax.Y, localMax.Z), worldTransform);
+
+                var wMin = worldCorners[0]; var wMax = worldCorners[0];
+                for (int i = 1; i < 8; i++) {
+                    wMin = Vector3.Min(wMin, worldCorners[i]);
+                    wMax = Vector3.Max(wMax, worldCorners[i]);
+                }
+                gizmo.RenderSelectionBox(gl, viewProjection, camera, wMin, wMax, new Vector3(1f, 0.85f, 0.15f));
+            }
+        }
+
         /// <summary>Set stamp preview data for Paste tool (PR #9). Preview rendering is per-context and called from Render().</summary>
         public void SetStampPreview(TerrainStamp? stamp, Vector2 worldPosition, float zOffset) {
             if (stamp == null) {
@@ -1745,7 +2026,20 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         private void RenderPlacementPreview(SceneContext context, StaticObject previewObj, ICamera camera, Matrix4x4 viewProjection) {
-            var renderData = context.ObjectManager.GetRenderData(previewObj.Id, previewObj.IsSetup);
+            var drawObj = previewObj;
+            if (previewObj.IsParticleEmitter) {
+                if (!TryGetParticleGfxId(_dats, previewObj.Id, out var gid)) return;
+                drawObj = new StaticObject {
+                    Id = gid,
+                    IsSetup = false,
+                    Origin = previewObj.Origin,
+                    Orientation = previewObj.Orientation,
+                    Scale = previewObj.Scale,
+                    IsParticleEmitter = false
+                };
+            }
+
+            var renderData = context.ObjectManager.GetRenderData(drawObj.Id, drawObj.IsSetup);
             if (renderData == null) return;
 
             if (renderData.IsSetup && renderData.SetupParts != null) {
@@ -1754,7 +2048,7 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
 
-            var objects = new List<StaticObject> { previewObj };
+            var objects = new List<StaticObject> { drawObj };
             RenderStaticObjects(context, objects, camera, viewProjection);
         }
 
@@ -1928,11 +2222,17 @@ namespace WorldBuilder.Editors.Landscape {
             buf[offset + 12] = m.M41; buf[offset + 13] = m.M42; buf[offset + 14] = m.M43; buf[offset + 15] = m.M44;
         }
 
-        private unsafe void RenderStaticObjectsPreTransformed(SceneContext context, List<StaticObject> objects, List<Matrix4x4> transforms, ICamera camera, Matrix4x4 viewProjection) {
+        private unsafe void RenderStaticObjectsPreTransformed(SceneContext context, List<StaticObject> objects, List<Matrix4x4> transforms, ICamera camera, Matrix4x4 viewProjection, bool additiveBlend = false) {
             var gl = context.Renderer.GraphicsDevice.GL;
             gl.Enable(EnableCap.DepthTest);
             gl.Enable(EnableCap.Blend);
-            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            if (additiveBlend) {
+                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+                gl.DepthMask(false);
+            }
+            else {
+                gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            }
             gl.Enable(EnableCap.CullFace);
             gl.CullFace(TriangleFace.Back);
 
@@ -1964,7 +2264,12 @@ namespace WorldBuilder.Editors.Landscape {
                 var (id, isSetup) = group.Key;
 
                 var renderData = objectManager.TryGetCachedRenderData(id);
-                if (renderData == null) continue;
+                if (renderData == null) {
+                    if (!context.ModelsPreparing.Contains(id) && !objectManager.IsKnownFailure(id)) {
+                        context.ModelWarmupQueue.Enqueue((id, isSetup));
+                    }
+                    continue;
+                }
 
                 if (isSetup && renderData.SetupParts != null) {
                     foreach (var (partId, partTransform) in renderData.SetupParts) {
@@ -2070,6 +2375,7 @@ namespace WorldBuilder.Editors.Landscape {
             gl.BindVertexArray(0);
             gl.UseProgram(0);
             gl.Disable(EnableCap.Blend);
+            if (additiveBlend) gl.DepthMask(true);
         }
 
         private unsafe void RenderStaticObjects(SceneContext context, List<StaticObject> objects, ICamera camera, Matrix4x4 viewProjection) {

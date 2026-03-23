@@ -1037,11 +1037,14 @@ namespace WorldBuilder.Editors.Landscape {
 
         private void EnsureInstanceUploadBuffer(int requiredFloats) {
             if (_instanceUploadBuffer.Length >= requiredFloats) return;
-            if (_instanceUploadBufferRented > 0)
-                ArrayPool<float>.Shared.Return(_instanceUploadBuffer);
             int newSize = Math.Max(requiredFloats, 256);
             newSize = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)newSize);
-            _instanceUploadBuffer = ArrayPool<float>.Shared.Rent(newSize);
+            var newBuffer = ArrayPool<float>.Shared.Rent(newSize);
+            if (_instanceUploadBuffer.Length > 0)
+                Array.Copy(_instanceUploadBuffer, newBuffer, _instanceUploadBuffer.Length);
+            if (_instanceUploadBufferRented > 0)
+                ArrayPool<float>.Shared.Return(_instanceUploadBuffer);
+            _instanceUploadBuffer = newBuffer;
             _instanceUploadBufferRented = newSize;
         }
 

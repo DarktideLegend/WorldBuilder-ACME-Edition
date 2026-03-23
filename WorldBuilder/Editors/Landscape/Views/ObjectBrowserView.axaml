@@ -23,7 +23,8 @@
                 <CheckBox Content="GfxObj" IsChecked="{Binding ShowGfxObjs}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
                 <CheckBox Content="Buildings" IsChecked="{Binding ShowBuildingsOnly}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
                 <CheckBox Content="Scenery" IsChecked="{Binding ShowSceneryOnly}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
-                <CheckBox Content="Weenies" IsChecked="{Binding ShowWeenies}" FontSize="11" Padding="2,0" />
+                <CheckBox Content="Weenies" IsChecked="{Binding ShowWeenies}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
+                <CheckBox Content="Particles" IsChecked="{Binding ShowParticleEmitters}" FontSize="11" Padding="2,0" />
             </WrapPanel>
 
             <Button Content="Load Weenies (DB)"

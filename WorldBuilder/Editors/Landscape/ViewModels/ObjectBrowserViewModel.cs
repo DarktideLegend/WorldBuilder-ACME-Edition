@@ -2,6 +2,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DatReaderWriter.DBObjs;
+using DatReaderWriter;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -15,6 +16,7 @@ using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Lib.AceDb;
 using WorldBuilder.ViewModels;
+using WorldBuilder.Editors.Landscape.WorldGen;
 
 namespace WorldBuilder.Editors.Landscape.ViewModels {
     /// <summary>
@@ -31,7 +33,10 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private bool _subscribedToThumbnailReady;
         private uint[] _allSetupIds = Array.Empty<uint>();
         private uint[] _allGfxObjIds = Array.Empty<uint>();
+        private uint[] _allParticleEmitterIds = Array.Empty<uint>();
         private HashSet<uint> _buildingIds = new();
+        /// <summary>Subset of <see cref="_buildingIds"/> suitable for placement (excludes fragments/modules).</summary>
+        private HashSet<uint> _completeBuildingModelIds = new();
         private bool _buildingIdsLoaded;
         private HashSet<uint> _sceneryIds = new();
         private bool _sceneryIdsLoaded;
@@ -48,6 +53,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         [ObservableProperty] private bool _showBuildingsOnly;
         [ObservableProperty] private bool _showSceneryOnly;
         [ObservableProperty] private bool _showWeenies;
+        /// <summary>When true, particle emitter definitions are included in the browser list (loaded from portal.dat).</summary>
+        [ObservableProperty] private bool _showParticleEmitters = true;
         [ObservableProperty] private bool _isLoadingWeenies;
         [ObservableProperty] private bool _hasMore;
 
@@ -77,7 +84,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             try {
                 _allSetupIds = _dats.Dats.Portal.GetAllIdsOfType<Setup>().OrderBy(id => id).ToArray();
                 _allGfxObjIds = _dats.Dats.Portal.GetAllIdsOfType<GfxObj>().OrderBy(id => id).ToArray();
-                Console.WriteLine($"[ObjectBrowser] Loaded {_allSetupIds.Length} Setups, {_allGfxObjIds.Length} GfxObjs");
+                try {
+                    _allParticleEmitterIds = _dats.Dats.Portal.GetAllIdsOfType<ParticleEmitter>().OrderBy(id => id).ToArray();
+                }
+                catch (Exception pex) {
+                    Console.WriteLine($"[ObjectBrowser] ParticleEmitter ID listing failed: {pex.Message}");
+                    _allParticleEmitterIds = Array.Empty<uint>();
+                }
+                Console.WriteLine($"[ObjectBrowser] Loaded {_allSetupIds.Length} Setups, {_allGfxObjIds.Length} GfxObjs, {_allParticleEmitterIds.Length} ParticleEmitters");
             }
             catch (Exception ex) {
                 Console.WriteLine($"[ObjectBrowser] Error loading object IDs: {ex.Message}");
@@ -118,8 +132,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             // Dispatch to UI thread to update the item
             Dispatcher.UIThread.Post(() => {
-                if (_itemLookup.TryGetValue(objectId, out var item)) {
-                    item.Thumbnail = bitmap;
+                foreach (var item in FilteredItems) {
+                    if (item.ThumbnailGraphicsId == objectId || (!item.IsParticleEmitter && item.Id == objectId))
+                        item.Thumbnail = bitmap;
                 }
             });
         }
@@ -163,6 +178,27 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 }
 
                 _buildingIds = buildingIds;
+
+                try {
+                    var complete = BuildingAnalyzer.GetEditorCompleteBuildingModelIds(_dats);
+                    if (complete.Count > 0) {
+                        _completeBuildingModelIds = complete.ToHashSet();
+                        Console.WriteLine($"[ObjectBrowser] Building catalog (blueprint+EnvCell): {_completeBuildingModelIds.Count} models " +
+                            $"(from {_buildingIds.Count} raw LBI IDs)");
+                    } else {
+                        _completeBuildingModelIds = BuildingAnalyzer.GetEditorEnvCellFallbackModelIds(_dats);
+                        if (_completeBuildingModelIds.Count > 0) {
+                            Console.WriteLine($"[ObjectBrowser] Using EnvCell fallback catalog (no blueprint pass): {_completeBuildingModelIds.Count} models");
+                        } else {
+                            Console.WriteLine("[ObjectBrowser] No EnvCell catalog entries; Buildings filter uses raw LBI minus denylist only.");
+                        }
+                    }
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"[ObjectBrowser] Could not build complete-building catalog: {ex.Message}");
+                    _completeBuildingModelIds = new HashSet<uint>();
+                }
+
                 _buildingIdsLoaded = true;
                 Console.WriteLine($"[ObjectBrowser] Found {_buildingIds.Count} unique building model IDs");
             }
@@ -216,6 +252,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         partial void OnShowGfxObjsChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
         partial void OnShowWeeniesChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
 
+        partial void OnShowParticleEmittersChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
+
         partial void OnShowBuildingsOnlyChanged(bool value) {
             if (value) { ShowSceneryOnly = false; ShowWeenies = false; }
             _displayLimit = BatchSize;
@@ -239,36 +277,36 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         /// <summary>
         /// Filters a set of IDs by either hex substring match or keyword search.
         /// </summary>
-        private (IEnumerable<uint> setups, IEnumerable<uint> gfxObjs) ApplySearchFilter(
-            IEnumerable<uint> setups, IEnumerable<uint> gfxObjs, out string? statusSuffix) {
+        private (IEnumerable<uint> setups, IEnumerable<uint> gfxObjs, IEnumerable<uint> particles) ApplySearchFilter(
+            IEnumerable<uint> setups, IEnumerable<uint> gfxObjs, IEnumerable<uint> particles, out string? statusSuffix) {
             statusSuffix = null;
 
-            if (string.IsNullOrWhiteSpace(SearchText)) return (setups, gfxObjs);
+            if (string.IsNullOrWhiteSpace(SearchText)) return (setups, gfxObjs, particles);
 
             if (IsHexSearch(SearchText, out var hexSearch)) {
-                // Hex ID search (existing behavior)
                 return (
                     setups.Where(id => id.ToString("X8").Contains(hexSearch)),
-                    gfxObjs.Where(id => id.ToString("X8").Contains(hexSearch))
+                    gfxObjs.Where(id => id.ToString("X8").Contains(hexSearch)),
+                    particles.Where(id => id.ToString("X8").Contains(hexSearch))
                 );
             }
 
-            // Keyword search via tag index
             if (!_tagIndex.IsLoaded) {
                 statusSuffix = "(keyword index not loaded)";
-                return (Array.Empty<uint>(), Array.Empty<uint>());
+                return (Array.Empty<uint>(), Array.Empty<uint>(), Array.Empty<uint>());
             }
 
             var matchedIds = _tagIndex.Search(SearchText);
             if (matchedIds.Count == 0) {
                 statusSuffix = $"No results for \"{SearchText}\"";
-                return (Array.Empty<uint>(), Array.Empty<uint>());
+                return (Array.Empty<uint>(), Array.Empty<uint>(), Array.Empty<uint>());
             }
 
             statusSuffix = $"Found {matchedIds.Count} matches for \"{SearchText}\"";
             return (
                 setups.Where(id => matchedIds.Contains(id)),
-                gfxObjs.Where(id => matchedIds.Contains(id))
+                gfxObjs.Where(id => matchedIds.Contains(id)),
+                particles.Where(id => matchedIds.Contains(id))
             );
         }
 
@@ -277,7 +315,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         /// Items start with placeholder thumbnails. Call RequestThumbnails() separately
         /// to load cached images and queue missing ones for rendering.
         /// </summary>
-        private ObservableCollection<ObjectBrowserItem> BuildItems(uint[] setups, uint[] gfxObjs, ObjectBrowserItem[]? weenies = null) {
+        private ObservableCollection<ObjectBrowserItem> BuildItems(uint[] setups, uint[] gfxObjs, uint[]? particles = null, ObjectBrowserItem[]? weenies = null) {
             var items = new ObservableCollection<ObjectBrowserItem>();
             _itemLookup.Clear();
 
@@ -300,6 +338,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 var item = new ObjectBrowserItem(id, isSetup: false, tags);
                 items.Add(item);
                 _itemLookup[id] = item;
+            }
+            if (particles != null) {
+                foreach (var id in particles) {
+                    var tags = _tagIndex.IsLoaded ? _tagIndex.GetTagString(id) : null;
+                    var item = new ObjectBrowserItem(id, tags, _dats);
+                    items.Add(item);
+                    _itemLookup[id] = item;
+                }
             }
 
             if (_thumbnailsReady) {
@@ -371,17 +417,16 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             foreach (var item in items) {
                 if (item.Thumbnail != null || item.Id == 0) { skipped++; continue; }
 
-                // Try disk cache first
-                var cachedBitmap = _thumbnailCache.TryLoadCached(item.Id);
+                var thumbId = item.ThumbnailGraphicsId;
+                var cachedBitmap = _thumbnailCache.TryLoadCached(thumbId);
                 if (cachedBitmap != null) {
                     item.Thumbnail = cachedBitmap;
                     cached++;
                     continue;
                 }
 
-                // Queue for rendering (only if service is available)
                 if (service != null) {
-                    service.RequestThumbnail(item.Id, item.IsSetup);
+                    service.RequestThumbnail(thumbId, item.IsParticleEmitter ? false : item.IsSetup);
                     queued++;
                 }
             }
@@ -398,16 +443,31 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     return;
                 }
 
-                IEnumerable<uint> buildingSetups = _buildingIds
+                IEnumerable<uint> buildingIdsForFilter = _completeBuildingModelIds.Count > 0
+                    ? _completeBuildingModelIds
+                    : _buildingIds.Where(id => !BuildingAnalyzer.KnownStructuralPieceModelIds.Contains(id));
+
+                IEnumerable<uint> buildingSetups = buildingIdsForFilter
                     .Where(id => (id & 0xFF000000) == 0x02000000).OrderBy(id => id);
-                IEnumerable<uint> buildingGfxObjs = _buildingIds
+                IEnumerable<uint> buildingGfxObjs = buildingIdsForFilter
                     .Where(id => (id & 0xFF000000) != 0x02000000).OrderBy(id => id);
 
-                var (filtSetups, filtGfx) = ApplySearchFilter(buildingSetups, buildingGfxObjs, out var suffix);
+                var (filtSetups, filtGfx, _) = ApplySearchFilter(buildingSetups, buildingGfxObjs, Enumerable.Empty<uint>(), out var suffix);
                 var sr = filtSetups.Take(100).ToArray();
                 var gr = filtGfx.Take(100).ToArray();
                 FilteredItems = BuildItems(sr, gr);
-                Status = suffix ?? $"{_buildingIds.Count} buildings total — showing {sr.Length + gr.Length}";
+                int totalListed = _completeBuildingModelIds.Count > 0
+                    ? _completeBuildingModelIds.Count
+                    : _buildingIds.Count(id => !BuildingAnalyzer.KnownStructuralPieceModelIds.Contains(id));
+                if (suffix == null) {
+                    if (_completeBuildingModelIds.Count > 0) {
+                        Status = $"{totalListed} buildings (filtered) — showing {sr.Length + gr.Length} ({_buildingIds.Count} raw LBI refs)";
+                    } else {
+                        Status = $"{totalListed} buildings (raw − denylist) — showing {sr.Length + gr.Length}";
+                    }
+                } else {
+                    Status = suffix;
+                }
                 return;
             }
 
@@ -424,7 +484,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 IEnumerable<uint> sceneryGfxObjs = _sceneryIds
                     .Where(id => (id & 0xFF000000) != 0x02000000).OrderBy(id => id);
 
-                var (filtSetups, filtGfx) = ApplySearchFilter(scenerySetups, sceneryGfxObjs, out var suffix);
+                var (filtSetups, filtGfx, _) = ApplySearchFilter(scenerySetups, sceneryGfxObjs, Enumerable.Empty<uint>(), out var suffix);
                 var scsr = filtSetups.Take(100).ToArray();
                 var scgr = filtGfx.Take(100).ToArray();
                 FilteredItems = BuildItems(scsr, scgr);
@@ -435,8 +495,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             // Normal mode: show all Setups / GfxObjs / Weenies
             IEnumerable<uint> setups = ShowSetups ? _allSetupIds : Array.Empty<uint>();
             IEnumerable<uint> gfxObjs = ShowGfxObjs ? _allGfxObjIds : Array.Empty<uint>();
+            IEnumerable<uint> particles = ShowParticleEmitters ? _allParticleEmitterIds : Enumerable.Empty<uint>();
 
-            var (fSetups, fGfx) = ApplySearchFilter(setups, gfxObjs, out var statusSuffix);
+            var (fSetups, fGfx, fParts) = ApplySearchFilter(setups, gfxObjs, particles, out var statusSuffix);
 
             var allWeenies = Array.Empty<ObjectBrowserItem>();
             if (ShowWeenies && _loadedWeenies.Count > 0) {
@@ -449,17 +510,26 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 allWeenies = filtered.ToArray();
             }
 
-            var combinedDat = fSetups.Concat(fGfx).ToArray();
+            var combinedDat = fSetups.Concat(fGfx).Concat(fParts).OrderBy(id => id).ToArray();
             int totalMatches = combinedDat.Length + allWeenies.Length;
 
             var weeniesTaken = allWeenies.Take(_displayLimit).ToArray();
             int datBudget = Math.Max(0, _displayLimit - weeniesTaken.Length);
             var datTaken = combinedDat.Take(datBudget).ToArray();
 
-            var setupResult = datTaken.Where(id => (id & 0xFF000000) == 0x02000000).ToArray();
-            var gfxResult = datTaken.Where(id => (id & 0xFF000000) != 0x02000000).ToArray();
+            var setupHs = new HashSet<uint>(_allSetupIds);
+            var gfxHs = new HashSet<uint>(_allGfxObjIds);
+            var partHs = new HashSet<uint>(_allParticleEmitterIds);
+            var setupList = new List<uint>();
+            var gfxList = new List<uint>();
+            var partList = new List<uint>();
+            foreach (var id in datTaken) {
+                if (partHs.Contains(id)) partList.Add(id);
+                else if (setupHs.Contains(id)) setupList.Add(id);
+                else if (gfxHs.Contains(id)) gfxList.Add(id);
+            }
 
-            FilteredItems = BuildItems(setupResult, gfxResult, weeniesTaken);
+            FilteredItems = BuildItems(setupList.ToArray(), gfxList.ToArray(), partList.ToArray(), weeniesTaken);
             HasMore = (weeniesTaken.Length + datTaken.Length) < totalMatches;
 
             int displayed = weeniesTaken.Length + datTaken.Length;
@@ -483,14 +553,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             _context.ObjectSelection.IsPlacementMode = true;
             _context.ObjectSelection.PlacementPreview = new StaticObject {
                 Id = item.Id,
-                IsSetup = item.IsSetup,
+                IsSetup = item.IsParticleEmitter ? false : item.IsSetup,
                 Origin = Vector3.Zero,
                 Orientation = Quaternion.Identity,
-                Scale = Vector3.One
+                Scale = Vector3.One,
+                IsParticleEmitter = item.IsParticleEmitter
             };
 
-            Status = $"Placing 0x{item.Id:X8} - click terrain to place, Escape to cancel";
-            Console.WriteLine($"[ObjectBrowser] Selected 0x{item.Id:X8} for placement (IsSetup={item.IsSetup})");
+            Status = item.IsParticleEmitter
+                ? $"Placing particle emitter 0x{item.Id:X8} - click terrain to place, Escape to cancel"
+                : $"Placing 0x{item.Id:X8} - click terrain to place, Escape to cancel";
+            Console.WriteLine($"[ObjectBrowser] Selected 0x{item.Id:X8} for placement (IsSetup={item.IsSetup}, particle={item.IsParticleEmitter})");
 
             PlacementRequested?.Invoke(this, EventArgs.Empty);
         }
