@@ -35,6 +35,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private List<ObjectBrowserItem> _loadedWeenies = new();
 
         private readonly Dictionary<uint, ObjectBrowserItem> _itemLookup = new();
+        private readonly HashSet<uint> _favoriteIds = new();
 
         [ObservableProperty] private ObservableCollection<ObjectBrowserItem> _filteredItems = new();
         [ObservableProperty] private string _searchText = "";
@@ -42,6 +43,7 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private bool _showSetups = true;
         [ObservableProperty] private bool _showGfxObjs = true;
         [ObservableProperty] private bool _showWeenies;
+        [ObservableProperty] private bool _showFavoritesOnly;
         [ObservableProperty] private bool _isLoadingWeenies;
         [ObservableProperty] private bool _hasMore;
 
@@ -78,6 +80,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 Console.WriteLine($"[DungeonObjectBrowser] Error loading object IDs: {ex.Message}");
             }
 
+            LoadObjectFavorites();
             ApplyFilter();
 
             _ = Task.Run(async () => {
@@ -106,6 +109,7 @@ namespace WorldBuilder.Editors.Dungeon {
         partial void OnShowSetupsChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
         partial void OnShowGfxObjsChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
         partial void OnShowWeeniesChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
+        partial void OnShowFavoritesOnlyChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
 
         [RelayCommand]
         private async Task LoadWeeniesFromDbAsync() {
@@ -207,6 +211,9 @@ namespace WorldBuilder.Editors.Dungeon {
                 _itemLookup[id] = item;
             }
 
+            foreach (var item in items)
+                item.IsFavorite = _favoriteIds.Contains(item.Id);
+
             if (_thumbnailsReady) {
                 RequestThumbnails(items);
             }
@@ -236,6 +243,22 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         private void ApplyFilter() {
+            if (ShowFavoritesOnly && _favoriteIds.Count > 0) {
+                var favSetups = _favoriteIds.Where(id => (id & 0xFF000000) == 0x02000000).OrderBy(id => id);
+                var favGfx = _favoriteIds.Where(id => (id & 0xFF000000) != 0x02000000).OrderBy(id => id);
+                var (fs, fg) = ApplySearchFilter(favSetups, favGfx, out var sfx);
+                FilteredItems = BuildItems(fs.ToArray(), fg.ToArray());
+                Status = sfx ?? $"{_favoriteIds.Count} favorites";
+                HasMore = false;
+                return;
+            }
+            if (ShowFavoritesOnly) {
+                FilteredItems = new ObservableCollection<ObjectBrowserItem>();
+                Status = "No favorites yet — click the star on any object to add it";
+                HasMore = false;
+                return;
+            }
+
             IEnumerable<uint> setups = ShowSetups ? _allSetupIds : Array.Empty<uint>();
             IEnumerable<uint> gfxObjs = ShowGfxObjs ? _allGfxObjIds : Array.Empty<uint>();
 
@@ -285,6 +308,49 @@ namespace WorldBuilder.Editors.Dungeon {
         private void ShowMore() {
             _displayLimit += BatchSize;
             ApplyFilter();
+        }
+
+        [RelayCommand]
+        private void ToggleFavorite(ObjectBrowserItem item) {
+            if (item == null) return;
+            if (_favoriteIds.Contains(item.Id)) {
+                _favoriteIds.Remove(item.Id);
+                item.IsFavorite = false;
+            } else {
+                _favoriteIds.Add(item.Id);
+                item.IsFavorite = true;
+            }
+            SaveObjectFavorites();
+            if (ShowFavoritesOnly) ApplyFilter();
+        }
+
+        private void LoadObjectFavorites() {
+            try {
+                var path = System.IO.Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "object_browser_favorites.json");
+                if (!System.IO.File.Exists(path)) return;
+                var json = System.IO.File.ReadAllText(path);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                foreach (var el in doc.RootElement.EnumerateArray())
+                    _favoriteIds.Add(el.GetUInt32());
+            } catch (Exception ex) {
+                Console.WriteLine($"[DungeonObjectBrowser] LoadFavorites: {ex.Message}");
+            }
+        }
+
+        private void SaveObjectFavorites() {
+            try {
+                var path = System.IO.Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "object_browser_favorites.json");
+                var dir = System.IO.Path.GetDirectoryName(path);
+                if (dir != null) System.IO.Directory.CreateDirectory(dir);
+                var json = System.Text.Json.JsonSerializer.Serialize(_favoriteIds.ToList());
+                System.IO.File.WriteAllText(path, json);
+            } catch (Exception ex) {
+                Console.WriteLine($"[DungeonObjectBrowser] SaveFavorites: {ex.Message}");
+            }
         }
 
         [RelayCommand]

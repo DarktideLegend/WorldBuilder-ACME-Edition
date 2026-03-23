@@ -240,7 +240,7 @@ namespace WorldBuilder.Editors.Dungeon {
             if (ecm == null) return false;
 
             if (_hasLoadedCells) {
-                ecm.UnloadLandblock(_loadedLandblockKey);
+                ecm.QueueUnload(_loadedLandblockKey);
                 _hasLoadedCells = false;
             }
 
@@ -282,7 +282,7 @@ namespace WorldBuilder.Editors.Dungeon {
             if (ecm == null) return;
 
             if (_hasLoadedCells) {
-                ecm.UnloadLandblock(_loadedLandblockKey);
+                ecm.QueueUnload(_loadedLandblockKey);
                 _hasLoadedCells = false;
             }
 
@@ -340,10 +340,9 @@ namespace WorldBuilder.Editors.Dungeon {
 
         /// <summary>Remove preview cells (e.g. when placement is cancelled).</summary>
         public void ClearPreview() {
-            // Set to empty list as the "clear" signal for UpdatePreviewLandblock
             PreviewEnvCells = new List<DatReaderWriter.DBObjs.EnvCell>();
             if (_hasPreviewCells && _sceneContext?.EnvCellManager != null) {
-                _sceneContext.EnvCellManager.UnloadLandblock(PreviewLandblockKey);
+                _sceneContext.EnvCellManager.QueueUnload(PreviewLandblockKey);
                 _hasPreviewCells = false;
             }
         }
@@ -1054,7 +1053,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             var transform = SelectedCell.WorldTransform;
             var camPos = Camera.Position;
-            const float portalLineWidth = 0.12f;
+            const float portalLineWidth = 0.06f;
 
             void AddPortalEdges(List<float> verts, ushort polyId) {
                 if (!cellStruct.Polygons.TryGetValue(polyId, out var poly)) return;
@@ -1167,8 +1166,8 @@ namespace WorldBuilder.Editors.Dungeon {
             _allOpenPortalVerts.Clear();
             _highlightedPortalVerts.Clear();
             var camPos = Camera.Position;
-            float lineWidth = IsInPlacementMode ? 0.35f : 0.25f;
-            float highlightWidth = 0.5f;
+            float lineWidth = IsInPlacementMode ? 0.18f : 0.12f;
+            float highlightWidth = 0.25f;
             bool hasHighlight = HighlightedPortalCellNum != 0 || HighlightedPortalPolyId != 0;
 
             for (int i = 0; i < OpenPortalIndicators.Count; i++) {
@@ -1299,7 +1298,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             _connPortalVerts.Clear();
             var camPos = Camera.Position;
-            const float lineWidth = 0.18f;
+            const float lineWidth = 0.09f;
 
             foreach (var indicator in ConnectedPortalIndicators) {
                 if (indicator.WorldVertices == null || indicator.WorldVertices.Length < 3) continue;
@@ -1375,7 +1374,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private unsafe void RenderConnectionLines(GL gl, Matrix4x4 viewProjection) {
             if (_sceneContext == null || ConnectionLines == null || ConnectionLines.Count == 0) return;
 
-            const float lineWidth = 0.35f;
+            const float lineWidth = 0.15f;
             var camPos = Camera.Position;
             _connLineVerts.Clear();
 
@@ -1469,7 +1468,7 @@ namespace WorldBuilder.Editors.Dungeon {
                               new[]{4,5}, new[]{5,6}, new[]{6,7}, new[]{7,4},
                               new[]{0,4}, new[]{1,5}, new[]{2,6}, new[]{3,7} };
 
-            const float lineWidth = 0.15f;
+            const float lineWidth = 0.07f;
             var camPos = Camera.Position;
             _selBoxVerts.Clear();
 
@@ -1540,7 +1539,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             _neighborBoxVerts.Clear();
             var camPos = Camera.Position;
-            const float lineWidth = 0.12f;
+            const float lineWidth = 0.06f;
 
             foreach (var cell in ConnectedNeighborCells) {
                 var min = cell.LocalBoundsMin;
@@ -1622,7 +1621,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private unsafe void RenderSelectedConnectionLines(GL gl, Matrix4x4 viewProjection) {
             if (_sceneContext == null || SelectedConnectionLines == null || SelectedConnectionLines.Count == 0) return;
 
-            const float lineWidth = 0.55f;
+            const float lineWidth = 0.25f;
             var camPos = Camera.Position;
             _selConnLineVerts.Clear();
 

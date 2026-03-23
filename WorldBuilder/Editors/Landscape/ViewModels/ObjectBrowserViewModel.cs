@@ -41,6 +41,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private HashSet<uint> _sceneryIds = new();
         private bool _sceneryIdsLoaded;
         private List<ObjectBrowserItem> _loadedWeenies = new();
+        private readonly HashSet<uint> _favoriteIds = new();
 
         private readonly Dictionary<uint, ObjectBrowserItem> _itemLookup = new();
 
@@ -55,6 +56,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         [ObservableProperty] private bool _showWeenies;
         /// <summary>When true, particle emitter definitions are included in the browser list (loaded from portal.dat).</summary>
         [ObservableProperty] private bool _showParticleEmitters = true;
+        [ObservableProperty] private bool _showFavoritesOnly;
         [ObservableProperty] private bool _isLoadingWeenies;
         [ObservableProperty] private bool _hasMore;
 
@@ -97,6 +99,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 Console.WriteLine($"[ObjectBrowser] Error loading object IDs: {ex.Message}");
             }
 
+            LoadObjectFavorites();
             ApplyFilter();
 
             // Scan building and scenery IDs in background to avoid blocking startup
@@ -254,6 +257,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
         partial void OnShowParticleEmittersChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
 
+        partial void OnShowFavoritesOnlyChanged(bool value) { _displayLimit = BatchSize; ApplyFilter(); }
+
         partial void OnShowBuildingsOnlyChanged(bool value) {
             if (value) { ShowSceneryOnly = false; ShowWeenies = false; }
             _displayLimit = BatchSize;
@@ -348,6 +353,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 }
             }
 
+            foreach (var item in items)
+                item.IsFavorite = _favoriteIds.Contains(item.Id);
+
             if (_thumbnailsReady) {
                 RequestThumbnails(items);
             }
@@ -435,6 +443,22 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         }
 
         private void ApplyFilter() {
+            if (ShowFavoritesOnly && _favoriteIds.Count > 0) {
+                var favSetups = _favoriteIds.Where(id => (id & 0xFF000000) == 0x02000000).OrderBy(id => id);
+                var favGfx = _favoriteIds.Where(id => (id & 0xFF000000) != 0x02000000).OrderBy(id => id);
+                var (fs, fg, _) = ApplySearchFilter(favSetups, favGfx, Enumerable.Empty<uint>(), out var sfx);
+                FilteredItems = BuildItems(fs.ToArray(), fg.ToArray());
+                Status = sfx ?? $"{_favoriteIds.Count} favorites";
+                HasMore = false;
+                return;
+            }
+            if (ShowFavoritesOnly) {
+                FilteredItems = new ObservableCollection<ObjectBrowserItem>();
+                Status = "No favorites yet — click the star on any object to add it";
+                HasMore = false;
+                return;
+            }
+
             // When buildings filter is active, show building IDs directly
             if (ShowBuildingsOnly) {
                 if (!_buildingIdsLoaded) {
@@ -541,6 +565,49 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 Status = $"Showing {displayed} of {totalMatches} — click Show More";
             else
                 Status = $"Showing all {displayed} results";
+        }
+
+        [RelayCommand]
+        private void ToggleFavorite(ObjectBrowserItem item) {
+            if (item == null) return;
+            if (_favoriteIds.Contains(item.Id)) {
+                _favoriteIds.Remove(item.Id);
+                item.IsFavorite = false;
+            } else {
+                _favoriteIds.Add(item.Id);
+                item.IsFavorite = true;
+            }
+            SaveObjectFavorites();
+            if (ShowFavoritesOnly) ApplyFilter();
+        }
+
+        private void LoadObjectFavorites() {
+            try {
+                var path = System.IO.Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "object_browser_favorites.json");
+                if (!System.IO.File.Exists(path)) return;
+                var json = System.IO.File.ReadAllText(path);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                foreach (var item in doc.RootElement.EnumerateArray())
+                    _favoriteIds.Add(item.GetUInt32());
+            } catch (Exception ex) {
+                Console.WriteLine($"[ObjectBrowser] LoadFavorites: {ex.Message}");
+            }
+        }
+
+        private void SaveObjectFavorites() {
+            try {
+                var path = System.IO.Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "object_browser_favorites.json");
+                var dir = System.IO.Path.GetDirectoryName(path);
+                if (dir != null) System.IO.Directory.CreateDirectory(dir);
+                var json = System.Text.Json.JsonSerializer.Serialize(_favoriteIds.ToList());
+                System.IO.File.WriteAllText(path, json);
+            } catch (Exception ex) {
+                Console.WriteLine($"[ObjectBrowser] SaveFavorites: {ex.Message}");
+            }
         }
 
         /// <summary>

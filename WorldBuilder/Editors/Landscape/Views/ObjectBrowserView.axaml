@@ -24,7 +24,16 @@
                 <CheckBox Content="Buildings" IsChecked="{Binding ShowBuildingsOnly}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
                 <CheckBox Content="Scenery" IsChecked="{Binding ShowSceneryOnly}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
                 <CheckBox Content="Weenies" IsChecked="{Binding ShowWeenies}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
-                <CheckBox Content="Particles" IsChecked="{Binding ShowParticleEmitters}" FontSize="11" Padding="2,0" />
+                <CheckBox Content="Particles" IsChecked="{Binding ShowParticleEmitters}" FontSize="11" Padding="2,0" Margin="0,0,8,0" />
+                <ToggleButton IsChecked="{Binding ShowFavoritesOnly}" Padding="4,2" FontSize="11"
+                              Background="Transparent" BorderThickness="0" ToolTip.Tip="Show favorites only">
+                    <Panel>
+                        <TextBlock Text="&#x2605;" FontSize="14" Foreground="#c8a832"
+                                   IsVisible="{Binding ShowFavoritesOnly}" />
+                        <TextBlock Text="&#x2606;" FontSize="14" Foreground="#5a4a6e"
+                                   IsVisible="{Binding !ShowFavoritesOnly}" />
+                    </Panel>
+                </ToggleButton>
             </WrapPanel>
 
             <Button Content="Load Weenies (DB)"
@@ -71,6 +80,19 @@
                                             Source="{Binding Thumbnail}"
                                             Stretch="Uniform"
                                             IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                                        <Button CornerRadius="0,4,0,0" Padding="2,0"
+                                                Background="#CC1a0e30" BorderThickness="0"
+                                                HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                                Command="{Binding $parent[UserControl].((vm:ObjectBrowserViewModel)DataContext).ToggleFavoriteCommand}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip.Tip="Toggle favorite" Cursor="Hand" Focusable="False">
+                                            <Panel>
+                                                <TextBlock Text="&#x2605;" FontSize="12" Foreground="#c8a832"
+                                                           IsVisible="{Binding IsFavorite}" />
+                                                <TextBlock Text="&#x2606;" FontSize="12" Foreground="#5a4a6e"
+                                                           IsVisible="{Binding !IsFavorite}" />
+                                            </Panel>
+                                        </Button>
                                     </Panel>
                                     <TextBlock
                                         Text="{Binding DisplayId}"
