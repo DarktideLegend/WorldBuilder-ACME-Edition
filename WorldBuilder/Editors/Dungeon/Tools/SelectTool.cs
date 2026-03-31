@@ -34,8 +34,10 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
 
         private Vector3 _gizmoOrigPos;
         private Quaternion _gizmoOrigRot;
+        private Vector3 _gizmoOrigScale;
         private Vector3 _gizmoWorldCenter;
         private Vector3 _gizmoCellHitStart;
+        private Quaternion _dragOriginRot;
 
         public SelectTool(DungeonEditingContext ctx) {
             _ctx = ctx;
@@ -75,6 +77,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                         _dragMode = DragMode.Gizmo;
                         _gizmoOrigPos = stab.Origin;
                         _gizmoOrigRot = stab.Orientation;
+                        _gizmoOrigScale = stab.Scale;
                         _gizmoWorldCenter = worldPos;
 
                         var startRay = ctx.ComputeRay(mouseState);
@@ -122,6 +125,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                         _dragMode = DragMode.MoveObject;
                         _dragWorldStart = objHit.HitPosition;
                         _dragOriginStart = cell.StaticObjects[objHit.ObjectIndex].Origin;
+                        _dragOriginRot = cell.StaticObjects[objHit.ObjectIndex].Orientation;
                     }
                     return true;
                 }
@@ -180,12 +184,22 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             if (mode == DragMode.MoveObject && _dragStarted && ctx.Document != null) {
                 var cell = ctx.Document.GetCell(ctx.SelectedObjCellNum);
                 if (cell != null && ctx.SelectedObjIndex < cell.StaticObjects.Count) {
-                    var delta = cell.StaticObjects[ctx.SelectedObjIndex].Origin - _dragOriginStart;
-                    if (delta.LengthSquared() > 0.001f) {
-                        cell.StaticObjects[ctx.SelectedObjIndex].Origin = _dragOriginStart;
-                        ctx.CommandHistory.Execute(
-                            new MoveStaticObjectCommand(ctx.SelectedObjCellNum, ctx.SelectedObjIndex, delta),
-                            ctx.Document);
+                    var stab = cell.StaticObjects[ctx.SelectedObjIndex];
+                    var delta = stab.Origin - _dragOriginStart;
+                    bool hasMoved = delta.LengthSquared() > 0.001f;
+                    bool hasRotated = MathF.Abs(Quaternion.Dot(stab.Orientation, _dragOriginRot)) < 0.9999f;
+
+                    if (hasMoved || hasRotated) {
+                        var newRot = stab.Orientation;
+                        stab.Origin = _dragOriginStart;
+                        stab.Orientation = _dragOriginRot;
+
+                        var composite = new DungeonCompositeCommand("Move Object");
+                        if (hasMoved)
+                            composite.Add(new MoveStaticObjectCommand(ctx.SelectedObjCellNum, ctx.SelectedObjIndex, delta));
+                        if (hasRotated)
+                            composite.Add(new SetObjectOrientationCommand(ctx.SelectedObjCellNum, ctx.SelectedObjIndex, _dragOriginRot, newRot));
+                        ctx.CommandHistory.Execute(composite, ctx.Document);
                         ctx.RefreshRendering();
                         ctx.NotifySelectionChanged();
                     }
@@ -308,16 +322,44 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                     var worldNewPos = StabToWorld(newPos, ctx.Document);
                     if (IsInsideAnyCell(worldNewPos, ctx)) {
                         cell.StaticObjects[ctx.SelectedObjIndex].Origin = newPos;
-                        ctx.RefreshRendering();
+
+                        if (ctx.AlignToSurface && ctx.Scene?.EnvCellManager != null) {
+                            var surfaceHit = ctx.Scene.EnvCellManager.RaycastSurface(ray.Value.origin, ray.Value.direction);
+                            if (surfaceHit.Hit) {
+                                float yaw = ExtractYaw(_dragOriginRot);
+                                cell.StaticObjects[ctx.SelectedObjIndex].Orientation =
+                                    TerrainEditingContext.AlignToSurfaceWithYaw(surfaceHit.HitNormal, yaw);
+                            }
+                        }
+
+                        ctx.Scene?.UpdateStaticObjectTransform(ctx.Document, ctx.SelectedObjCellNum, ctx.SelectedObjIndex);
                     }
                 }
                 return true;
             }
 
-            // Hover feedback
+            // Hover feedback — detect hovered objects for highlight rendering
             if (ctx.Scene?.EnvCellManager == null) return false;
             var hoverRay = ctx.ComputeRay(mouseState);
             if (hoverRay == null) return false;
+
+            if (ctx.Document != null && ctx.Scene != null) {
+                var objHover = DungeonObjectRaycast.Raycast(hoverRay.Value.origin, hoverRay.Value.direction, ctx.Document, ctx.Scene);
+                if (objHover.Hit) {
+                    var hoverCell = ctx.Document.GetCell(objHover.CellNumber);
+                    if (hoverCell != null && objHover.ObjectIndex < hoverCell.StaticObjects.Count) {
+                        var stab = hoverCell.StaticObjects[objHover.ObjectIndex];
+                        ctx.Scene.HoveredObjectId = stab.Id;
+                        ctx.Scene.HoveredObjectIsSetup = (stab.Id & 0xFF000000) == 0x02000000;
+                        ctx.Scene.HoveredObjectPosition = StabToWorld(stab.Origin, ctx.Document);
+                        ctx.Scene.HoveredObjectOrientation = stab.Orientation;
+                        ctx.Scene.HoveredObjectScale = stab.Scale;
+                    }
+                } else {
+                    ctx.Scene.HoveredObjectPosition = null;
+                }
+            }
+
             var hoverHit = ctx.Raycast(hoverRay.Value.origin, hoverRay.Value.direction);
             if (hoverHit.Hit) {
                 var roomName = ctx.RoomPalette?.GetRoomDisplayName(hoverHit.Cell.EnvironmentId, (ushort)hoverHit.Cell.GpuKey.CellStructure);
@@ -435,10 +477,16 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 var rotation = Quaternion.CreateFromAxisAngle(axisDir, angle);
                 stab.Orientation = Quaternion.Normalize(rotation * _gizmoOrigRot);
             }
+            else if (gizmo.Mode == GizmoMode.Scale) {
+                var scaleDelta = gizmo.ComputeScaleDelta(mouseState.Position, camera, _gizmoWorldCenter);
+                var newScale = _gizmoOrigScale + _gizmoOrigScale * scaleDelta;
+                newScale = Vector3.Max(newScale, new Vector3(0.01f));
+                stab.Scale = newScale;
+            }
 
             ctx.Scene.SelectedObjectPosition = StabToWorld(stab.Origin, ctx.Document);
             ctx.Scene.SelectedObjectOrientation = stab.Orientation;
-            ctx.RefreshRendering();
+            ctx.Scene.UpdateStaticObjectTransform(ctx.Document, ctx.SelectedObjCellNum, ctx.SelectedObjIndex);
         }
 
         private void FinalizeGizmoDrag(DungeonEditingContext ctx) {
@@ -473,6 +521,15 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                     hasChange = true;
                 }
             }
+            else if (gizmo.Mode == GizmoMode.Scale) {
+                var diff = stab.Scale - _gizmoOrigScale;
+                if (diff.LengthSquared() > 0.0001f) {
+                    var newScale = stab.Scale;
+                    stab.Scale = _gizmoOrigScale;
+                    composite.Add(new ScaleStaticObjectCommand(ctx.SelectedObjCellNum, ctx.SelectedObjIndex, _gizmoOrigScale, newScale));
+                    hasChange = true;
+                }
+            }
 
             if (hasChange) {
                 ctx.CommandHistory.Execute(composite, ctx.Document);
@@ -488,7 +545,8 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             if (cell == null || ctx.SelectedObjIndex >= cell.StaticObjects.Count) return;
             cell.StaticObjects[ctx.SelectedObjIndex].Origin = _gizmoOrigPos;
             cell.StaticObjects[ctx.SelectedObjIndex].Orientation = _gizmoOrigRot;
-            ctx.RefreshRendering();
+            cell.StaticObjects[ctx.SelectedObjIndex].Scale = _gizmoOrigScale;
+            ctx.Scene?.UpdateStaticObjectTransform(ctx.Document, ctx.SelectedObjCellNum, ctx.SelectedObjIndex);
         }
 
         private static float ExtractYaw(Quaternion q) {

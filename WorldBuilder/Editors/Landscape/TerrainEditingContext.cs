@@ -128,16 +128,69 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         /// <summary>
-        /// Computes a quaternion that aligns an object's up-vector to the given surface normal.
+        /// Computes a quaternion that aligns an object's up-vector (+Z) to the given surface normal.
+        /// Works for floors, walls, ceilings, and any arbitrary surface orientation.
         /// </summary>
         public static Quaternion AlignToNormal(Vector3 surfaceNormal) {
+            if (surfaceNormal.LengthSquared() < 1e-10f) return Quaternion.Identity;
+            surfaceNormal = Vector3.Normalize(surfaceNormal);
+
             var up = Vector3.UnitZ;
-            if (Vector3.Dot(up, surfaceNormal) > 0.9999f) return Quaternion.Identity;
+            float dot = Vector3.Dot(up, surfaceNormal);
+
+            if (dot > 0.9999f) return Quaternion.Identity;
+            if (dot < -0.9999f) return Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI);
+
             var axis = Vector3.Cross(up, surfaceNormal);
             if (axis.LengthSquared() < 1e-10f) return Quaternion.Identity;
             axis = Vector3.Normalize(axis);
-            float angle = MathF.Acos(Math.Clamp(Vector3.Dot(up, surfaceNormal), -1f, 1f));
+            float angle = MathF.Acos(Math.Clamp(dot, -1f, 1f));
             return Quaternion.CreateFromAxisAngle(axis, angle);
+        }
+
+        /// <summary>
+        /// Computes a full orientation quaternion that places an object on a surface:
+        /// the object's +Z axis aligns to the surface normal (object faces away from surface),
+        /// while preserving a yaw angle around the normal. Works for floors, walls, and ceilings.
+        /// </summary>
+        public static Quaternion AlignToSurfaceWithYaw(Vector3 surfaceNormal, float yaw) {
+            if (surfaceNormal.LengthSquared() < 1e-10f) return Quaternion.Identity;
+            surfaceNormal = Vector3.Normalize(surfaceNormal);
+
+            var forward = surfaceNormal;
+            float absDotZ = MathF.Abs(Vector3.Dot(forward, Vector3.UnitZ));
+
+            Vector3 referenceUp;
+            if (absDotZ > 0.95f) {
+                // Floor or ceiling: use yaw-rotated Y axis as reference
+                referenceUp = new Vector3(MathF.Sin(yaw), MathF.Cos(yaw), 0f);
+            } else {
+                // Wall or angled surface: world Z is usable as a reference
+                referenceUp = Vector3.UnitZ;
+            }
+
+            var right = Vector3.Cross(referenceUp, forward);
+            if (right.LengthSquared() < 1e-10f) {
+                referenceUp = Vector3.UnitX;
+                right = Vector3.Cross(referenceUp, forward);
+            }
+            right = Vector3.Normalize(right);
+            var up = Vector3.Normalize(Vector3.Cross(forward, right));
+
+            // Apply yaw rotation around the surface normal for non-floor/ceiling surfaces
+            if (absDotZ <= 0.95f) {
+                var yawRot = Quaternion.CreateFromAxisAngle(forward, yaw);
+                right = Vector3.Transform(right, yawRot);
+                up = Vector3.Transform(up, yawRot);
+            }
+
+            var rotMatrix = new Matrix4x4(
+                right.X, right.Y, right.Z, 0,
+                up.X, up.Y, up.Z, 0,
+                forward.X, forward.Y, forward.Z, 0,
+                0, 0, 0, 1);
+
+            return Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(rotMatrix));
         }
 
         /// <summary>

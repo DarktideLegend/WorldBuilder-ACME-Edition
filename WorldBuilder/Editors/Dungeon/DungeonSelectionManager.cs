@@ -143,7 +143,8 @@ namespace WorldBuilder.Editors.Dungeon {
             var worldOrigin = stab.Origin + lbOffset;
             worldOrigin.Z += -50f;
 
-            var worldTransform = Matrix4x4.CreateFromQuaternion(stab.Orientation)
+            var worldTransform = Matrix4x4.CreateScale(stab.Scale)
+                * Matrix4x4.CreateFromQuaternion(stab.Orientation)
                 * Matrix4x4.CreateTranslation(worldOrigin);
 
             var worldMin = Vector3.Transform(bounds.Value.Min, worldTransform);

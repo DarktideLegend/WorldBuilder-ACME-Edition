@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using System;
 using System.Collections.ObjectModel;
 using System.Numerics;
+using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Lib;
 using WorldBuilder.Shared.Documents;
 
@@ -32,6 +33,17 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
         public override void OnDeactivated() {
             _pendingObjectId = null;
             StatusText = "";
+        }
+
+        /// <summary>
+        /// Clears visual indicators when the tool is not actively placing.
+        /// Called by HandleMouseMove when no hit, and by OnDeactivated.
+        /// </summary>
+        private void ClearIndicators(DungeonEditingContext ctx) {
+            if (ctx.Scene != null) {
+                ctx.Scene.PlacementPreview = null;
+                ctx.Scene.SurfaceIndicatorPosition = null;
+            }
         }
 
         public void SetObject(uint objectId, bool isSetup) {
@@ -65,10 +77,22 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             var blockX = (lbId >> 8) & 0xFF;
             var blockY = lbId & 0xFF;
             var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
-            var localOrigin = hit.HitPosition - lbOffset;
+
+            var orientation = Quaternion.Identity;
+            var hitPos = hit.HitPosition;
+
+            if (ctx.AlignToSurface && ctx.Scene.EnvCellManager != null) {
+                var surfaceHit = ctx.Scene.EnvCellManager.RaycastSurface(origin, dir);
+                if (surfaceHit.Hit) {
+                    hitPos = surfaceHit.HitPosition;
+                    orientation = TerrainEditingContext.AlignToSurfaceWithYaw(surfaceHit.HitNormal, 0f);
+                }
+            }
+
+            var localOrigin = hitPos - lbOffset;
             localOrigin.Z += 50f;
 
-            var cmd = new AddStaticObjectCommand(cellNum, PendingObjectId.Value, localOrigin, Quaternion.Identity);
+            var cmd = new AddStaticObjectCommand(cellNum, PendingObjectId.Value, localOrigin, orientation);
             ctx.CommandHistory.Execute(cmd, ctx.Document);
             ctx.Document.MarkDirty();
             ctx.RefreshRendering();
@@ -89,16 +113,30 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
 
             var hit = ctx.Raycast(origin, dir);
             if (hit.Hit) {
+                var orientation = Quaternion.Identity;
+                var hitPos = hit.HitPosition;
+
+                if (ctx.AlignToSurface && ctx.Scene.EnvCellManager != null) {
+                    var surfaceHit = ctx.Scene.EnvCellManager.RaycastSurface(origin, dir);
+                    if (surfaceHit.Hit) {
+                        hitPos = surfaceHit.HitPosition;
+                        orientation = TerrainEditingContext.AlignToSurfaceWithYaw(surfaceHit.HitNormal, 0f);
+                        ctx.Scene.SurfaceIndicatorPosition = surfaceHit.HitPosition;
+                        ctx.Scene.SurfaceIndicatorNormal = surfaceHit.HitNormal;
+                    }
+                }
+
                 ctx.Scene.PlacementPreview = new Shared.Documents.StaticObject {
                     Id = PendingObjectId.Value,
                     IsSetup = PendingObjectIsSetup,
-                    Origin = hit.HitPosition,
-                    Orientation = Quaternion.Identity,
+                    Origin = hitPos,
+                    Orientation = orientation,
                     Scale = Vector3.One
                 };
             }
             else {
                 ctx.Scene.PlacementPreview = null;
+                ctx.Scene.SurfaceIndicatorPosition = null;
             }
             return false;
         }

@@ -48,6 +48,7 @@ namespace WorldBuilder.Shared.Documents {
         public uint Id;
         public Vector3 Origin;
         public Quaternion Orientation = Quaternion.Identity;
+        public Vector3 Scale = Vector3.One;
     }
 
     /// <summary>

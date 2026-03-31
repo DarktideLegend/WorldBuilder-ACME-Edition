@@ -81,6 +81,27 @@ namespace WorldBuilder.Editors.Dungeon {
         public StaticObject? PlacementPreview { get; set; }
 
         /// <summary>
+        /// Surface indicator for placement: shows an oriented disc at the cursor hit point.
+        /// </summary>
+        public Vector3? SurfaceIndicatorPosition { get; set; }
+        public Vector3 SurfaceIndicatorNormal { get; set; } = Vector3.UnitZ;
+
+        /// <summary>
+        /// Hovered object info for highlight rendering. Set by the SelectTool on mouse move.
+        /// </summary>
+        public uint HoveredObjectId { get; set; }
+        public bool HoveredObjectIsSetup { get; set; }
+        public Vector3? HoveredObjectPosition { get; set; }
+        public Quaternion HoveredObjectOrientation { get; set; } = Quaternion.Identity;
+        public Vector3 HoveredObjectScale { get; set; } = Vector3.One;
+
+        /// <summary>
+        /// Whether the placement preview position is inside a valid cell.
+        /// When false, the preview tints red.
+        /// </summary>
+        public bool PlacementPreviewValid { get; set; } = true;
+
+        /// <summary>
         /// Set by the editor when in room placement mode. Rendered as a wireframe preview
         /// showing where the room would be placed. Null when not in placement mode.
         /// </summary>
@@ -200,6 +221,9 @@ namespace WorldBuilder.Editors.Dungeon {
         private Vector3 _gridCenter;
         private bool _gridDirty = true;
 
+        private uint _surfaceIndicatorVAO;
+        private uint _surfaceIndicatorVBO;
+
         private ushort _loadedLandblockKey;
         private bool _hasLoadedCells;
 
@@ -303,10 +327,63 @@ namespace WorldBuilder.Editors.Dungeon {
                 IntegrateStatics(batch);
             }
 
+            ApplyDocumentScales(document);
             IntegrateInstancePlacements(document);
 
             ecm.FocusedDungeonLB = _loadedLandblockKey;
             _hasLoadedCells = true;
+        }
+
+        /// <summary>
+        /// Lightweight update for a single static object's transform during gizmo drag.
+        /// Patches the render list in-place instead of rebuilding the entire scene,
+        /// preventing the cell unload/reload cycle that causes geometry to vanish.
+        /// </summary>
+        public void UpdateStaticObjectTransform(DungeonDocument document, ushort cellNum, int objectIndex) {
+            var cell = document.GetCell(cellNum);
+            if (cell == null || objectIndex >= cell.StaticObjects.Count) return;
+
+            var stab = cell.StaticObjects[objectIndex];
+            var blockX = (_loadedLandblockKey >> 8) & 0xFF;
+            var blockY = _loadedLandblockKey & 0xFF;
+            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, EnvCellManager.DungeonDepthOffset);
+
+            int staticIdx = 0;
+            foreach (var dc in document.Cells) {
+                for (int i = 0; i < dc.StaticObjects.Count; i++) {
+                    if (dc.CellNumber == cellNum && i == objectIndex && staticIdx < _dungeonStatics.Count) {
+                        var s = _dungeonStatics[staticIdx];
+                        s.Origin = stab.Origin + lbOffset;
+                        s.Orientation = stab.Orientation;
+                        s.Scale = stab.Scale;
+                        _dungeonStatics[staticIdx] = s;
+                        return;
+                    }
+                    staticIdx++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Apply per-object Scale from the document's DungeonStabData onto the rendered statics list.
+        /// The DAT format doesn't carry scale, so we overlay it after building the statics from EnvCells.
+        /// </summary>
+        private void ApplyDocumentScales(DungeonDocument document) {
+            var blockX = (_loadedLandblockKey >> 8) & 0xFF;
+            var blockY = _loadedLandblockKey & 0xFF;
+            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, EnvCellManager.DungeonDepthOffset);
+
+            int staticIdx = 0;
+            foreach (var dc in document.Cells) {
+                foreach (var stab in dc.StaticObjects) {
+                    if (staticIdx < _dungeonStatics.Count && stab.Scale != Vector3.One) {
+                        var s = _dungeonStatics[staticIdx];
+                        s.Scale = stab.Scale;
+                        _dungeonStatics[staticIdx] = s;
+                    }
+                    staticIdx++;
+                }
+            }
         }
 
         private void UpdatePreviewLandblock(EnvCellManager ecm) {
@@ -584,9 +661,19 @@ namespace WorldBuilder.Editors.Dungeon {
                 }
             }
 
+            // Render hovered object highlight (before placement so it's visible under ghost)
+            if (HoveredObjectPosition.HasValue && !PlacementPreview.HasValue) {
+                RenderHoveredObjectHighlight(gl, viewProjection);
+            }
+
             // Render placement preview (ghost object following mouse)
             if (PlacementPreview.HasValue) {
                 RenderPlacementPreview(gl, viewProjection, PlacementPreview.Value);
+            }
+
+            // Render surface indicator (oriented disc at cursor position)
+            if (SurfaceIndicatorPosition.HasValue) {
+                RenderSurfaceIndicator(gl, viewProjection);
             }
 
             // Render room placement preview (wireframe ghost)
@@ -900,7 +987,6 @@ namespace WorldBuilder.Editors.Dungeon {
             var renderData = objectManager.TryGetCachedRenderData(previewObj.Id);
             if (renderData == null) return;
 
-            // Ensure setup parts are also cached
             if (renderData.IsSetup && renderData.SetupParts != null) {
                 foreach (var (partId, _) in renderData.SetupParts) {
                     objectManager.GetRenderData(partId, false);
@@ -911,17 +997,23 @@ namespace WorldBuilder.Editors.Dungeon {
             gl.Enable(EnableCap.Blend);
             gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             gl.Disable(EnableCap.CullFace);
+            gl.DepthMask(false);
+
+            var tintColor = PlacementPreviewValid ? new Vector3(0.3f, 0.8f, 1.0f) : new Vector3(1.0f, 0.2f, 0.2f);
+            float tintIntensity = 0.4f;
 
             objectManager._objectShader.Bind();
             objectManager._objectShader.SetUniform("uViewProjection", viewProjection);
             objectManager._objectShader.SetUniform("uCameraPosition", Camera.Position);
             objectManager._objectShader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
-            objectManager._objectShader.SetUniform("uAmbientIntensity", 0.7f);
-            objectManager._objectShader.SetUniform("uSpecularPower", 8f);
+            objectManager._objectShader.SetUniform("uAmbientIntensity", 0.8f);
+            objectManager._objectShader.SetUniform("uSpecularPower", 4f);
+            objectManager._objectShader.SetUniform("uHighlightColor", tintColor);
+            objectManager._objectShader.SetUniform("uHighlightIntensity", tintIntensity);
 
-            var worldMatrix = Matrix4x4.CreateTranslation(previewObj.Origin)
+            var worldMatrix = Matrix4x4.CreateScale(previewObj.Scale)
                 * Matrix4x4.CreateFromQuaternion(previewObj.Orientation)
-                * Matrix4x4.CreateScale(previewObj.Scale);
+                * Matrix4x4.CreateTranslation(previewObj.Origin);
 
             if (renderData.IsSetup && renderData.SetupParts != null) {
                 foreach (var (partId, partTransform) in renderData.SetupParts) {
@@ -934,6 +1026,149 @@ namespace WorldBuilder.Editors.Dungeon {
                 RenderBatchedObject(gl, renderData, new List<Matrix4x4> { worldMatrix });
             }
 
+            objectManager._objectShader.SetUniform("uHighlightColor", Vector3.Zero);
+            objectManager._objectShader.SetUniform("uHighlightIntensity", 0f);
+            gl.DepthMask(true);
+            gl.BindVertexArray(0);
+            gl.UseProgram(0);
+            gl.Enable(EnableCap.CullFace);
+        }
+
+        private unsafe void RenderSurfaceIndicator(GL gl, Matrix4x4 viewProjection) {
+            if (_sceneContext == null || !SurfaceIndicatorPosition.HasValue) return;
+
+            var center = SurfaceIndicatorPosition.Value;
+            var normal = SurfaceIndicatorNormal;
+            if (normal.LengthSquared() < 1e-6f) normal = Vector3.UnitZ;
+            normal = Vector3.Normalize(normal);
+
+            float absZ = MathF.Abs(Vector3.Dot(normal, Vector3.UnitZ));
+            Vector3 color;
+            if (absZ > 0.7f) {
+                color = normal.Z > 0 ? new Vector3(0.2f, 0.9f, 0.3f) : new Vector3(0.9f, 0.2f, 0.2f);
+            } else {
+                color = new Vector3(0.3f, 0.6f, 1.0f);
+            }
+
+            const float radius = 0.6f;
+            const int segments = 24;
+
+            var perp1 = MathF.Abs(Vector3.Dot(normal, Vector3.UnitY)) < 0.9f
+                ? Vector3.Normalize(Vector3.Cross(normal, Vector3.UnitY))
+                : Vector3.Normalize(Vector3.Cross(normal, Vector3.UnitX));
+            var perp2 = Vector3.Normalize(Vector3.Cross(normal, perp1));
+
+            var verts = new List<float>();
+            var camPos = Camera.Position;
+            var n = Vector3.Normalize(camPos - center);
+
+            for (int i = 0; i < segments; i++) {
+                float a1 = 2f * MathF.PI * i / segments;
+                float a2 = 2f * MathF.PI * ((i + 1) % segments) / segments;
+
+                var p0 = center + normal * 0.02f;
+                var p1 = center + (perp1 * MathF.Cos(a1) + perp2 * MathF.Sin(a1)) * radius + normal * 0.02f;
+                var p2 = center + (perp1 * MathF.Cos(a2) + perp2 * MathF.Sin(a2)) * radius + normal * 0.02f;
+
+                void V(Vector3 p) { verts.Add(p.X); verts.Add(p.Y); verts.Add(p.Z); verts.Add(n.X); verts.Add(n.Y); verts.Add(n.Z); }
+                V(p0); V(p1); V(p2);
+            }
+
+            // Normal arrow (small line from center along normal)
+            float arrowLen = 1.0f;
+            var arrowEnd = center + normal * arrowLen;
+            float arrowW = 0.04f;
+            var toCamera = Vector3.Normalize(camPos - center);
+            var arrowSide = Vector3.Cross(normal, toCamera);
+            if (arrowSide.LengthSquared() < 1e-6f) arrowSide = Vector3.Cross(normal, Vector3.UnitX);
+            arrowSide = Vector3.Normalize(arrowSide) * arrowW;
+
+            void AV(Vector3 p) { verts.Add(p.X); verts.Add(p.Y); verts.Add(p.Z); verts.Add(n.X); verts.Add(n.Y); verts.Add(n.Z); }
+            AV(center - arrowSide + normal * 0.02f); AV(arrowEnd - arrowSide); AV(arrowEnd + arrowSide);
+            AV(center - arrowSide + normal * 0.02f); AV(arrowEnd + arrowSide); AV(center + arrowSide + normal * 0.02f);
+
+            int vertCount = verts.Count / 6;
+            var data = CollectionsMarshal.AsSpan(verts);
+
+            if (_surfaceIndicatorVAO == 0) {
+                gl.GenVertexArrays(1, out _surfaceIndicatorVAO);
+                gl.GenBuffers(1, out _surfaceIndicatorVBO);
+            }
+
+            gl.BindVertexArray(_surfaceIndicatorVAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _surfaceIndicatorVBO);
+            fixed (float* ptr = data) {
+                gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+            }
+            gl.EnableVertexAttribArray(0);
+            gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+            gl.EnableVertexAttribArray(1);
+            gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            for (uint i = 2; i < 8; i++) gl.DisableVertexAttribArray(i);
+            gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+            var shader = _sceneContext.SphereShader;
+            shader.Bind();
+            shader.SetUniform("uViewProjection", viewProjection);
+            shader.SetUniform("uCameraPosition", Camera.Position);
+            shader.SetUniform("uSphereColor", color);
+            shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+            shader.SetUniform("uAmbientIntensity", 1.0f);
+            shader.SetUniform("uSpecularPower", 0f);
+            shader.SetUniform("uGlowColor", color * 0.4f);
+            shader.SetUniform("uGlowIntensity", 0.3f);
+            shader.SetUniform("uGlowPower", 1.0f);
+
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
+            gl.Enable(EnableCap.Blend);
+            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
+            gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.CullFace);
+
+            gl.BindVertexArray(0);
+            gl.UseProgram(0);
+        }
+
+        private unsafe void RenderHoveredObjectHighlight(GL gl, Matrix4x4 viewProjection) {
+            if (_sceneContext == null || !HoveredObjectPosition.HasValue) return;
+            var objectManager = _sceneContext.ObjectManager;
+
+            var renderData = objectManager.TryGetCachedRenderData(HoveredObjectId);
+            if (renderData == null) return;
+
+            gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.Blend);
+            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            gl.Disable(EnableCap.CullFace);
+
+            objectManager._objectShader.Bind();
+            objectManager._objectShader.SetUniform("uViewProjection", viewProjection);
+            objectManager._objectShader.SetUniform("uCameraPosition", Camera.Position);
+            objectManager._objectShader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+            objectManager._objectShader.SetUniform("uAmbientIntensity", 0.5f);
+            objectManager._objectShader.SetUniform("uSpecularPower", 8f);
+            objectManager._objectShader.SetUniform("uHighlightColor", new Vector3(0.4f, 0.7f, 1.0f));
+            objectManager._objectShader.SetUniform("uHighlightIntensity", 0.8f);
+
+            var worldMatrix = Matrix4x4.CreateScale(HoveredObjectScale)
+                * Matrix4x4.CreateFromQuaternion(HoveredObjectOrientation)
+                * Matrix4x4.CreateTranslation(HoveredObjectPosition.Value);
+
+            if (renderData.IsSetup && renderData.SetupParts != null) {
+                foreach (var (partId, partTransform) in renderData.SetupParts) {
+                    var partRenderData = objectManager.TryGetCachedRenderData(partId);
+                    if (partRenderData == null) continue;
+                    RenderBatchedObject(gl, partRenderData, new List<Matrix4x4> { partTransform * worldMatrix });
+                }
+            }
+            else {
+                RenderBatchedObject(gl, renderData, new List<Matrix4x4> { worldMatrix });
+            }
+
+            objectManager._objectShader.SetUniform("uHighlightColor", Vector3.Zero);
+            objectManager._objectShader.SetUniform("uHighlightIntensity", 0f);
             gl.BindVertexArray(0);
             gl.UseProgram(0);
             gl.Enable(EnableCap.CullFace);
@@ -1923,6 +2158,8 @@ namespace WorldBuilder.Editors.Dungeon {
                 if (_selConnLineVAO != 0) gl.DeleteVertexArray(_selConnLineVAO);
                 if (_gridVBO != 0) gl.DeleteBuffer(_gridVBO);
                 if (_gridVAO != 0) gl.DeleteVertexArray(_gridVAO);
+                if (_surfaceIndicatorVBO != 0) gl.DeleteBuffer(_surfaceIndicatorVBO);
+                if (_surfaceIndicatorVAO != 0) gl.DeleteVertexArray(_surfaceIndicatorVAO);
             }
             _sceneContext?.Dispose();
         }

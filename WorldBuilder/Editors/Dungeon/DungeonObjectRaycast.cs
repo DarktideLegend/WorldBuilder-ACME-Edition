@@ -46,7 +46,8 @@ namespace WorldBuilder.Editors.Dungeon {
                     worldOrigin.Z += dungeonZBump;
 
                     var worldTransform =
-                        Matrix4x4.CreateFromQuaternion(stab.Orientation)
+                        Matrix4x4.CreateScale(stab.Scale)
+                        * Matrix4x4.CreateFromQuaternion(stab.Orientation)
                         * Matrix4x4.CreateTranslation(worldOrigin);
 
                     var worldMin = Vector3.Transform(localMin, worldTransform);
