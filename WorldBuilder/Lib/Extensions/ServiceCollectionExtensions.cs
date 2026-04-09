@@ -13,6 +13,7 @@ using WorldBuilder.Editors.Skill;
 using WorldBuilder.Editors.Spell;
 using WorldBuilder.Editors.SpellSet;
 using WorldBuilder.Editors.Vital;
+using WorldBuilder.Editors.Monster;
 using WorldBuilder.Editors.Weenie;
 using WorldBuilder.Lib.Factories;
 using WorldBuilder.Lib.Settings;
@@ -80,6 +81,7 @@ namespace WorldBuilder.Lib.Extensions {
             collection.AddSingleton<LayoutEditorViewModel>();
             collection.AddSingleton<ObjectDebugEditorViewModel>();
             collection.AddSingleton<WeenieEditorViewModel>();
+            collection.AddSingleton<MonsterEditorViewModel>();
             collection.AddTransient<HistorySnapshotPanelViewModel>();
         }
     }

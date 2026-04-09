@@ -18,6 +18,7 @@ using WorldBuilder.Editors.Spell;
 using WorldBuilder.Editors.SpellSet;
 using WorldBuilder.Editors.Vital;
 using WorldBuilder.Editors.Layout;
+using WorldBuilder.Editors.Monster;
 using WorldBuilder.Editors.Weenie;
 using WorldBuilder.Editors.ObjectDebug;
 using WorldBuilder.Lib;
@@ -248,6 +249,11 @@ public partial class MainViewModel : ViewModelBase {
     [RelayCommand]
     private void SwitchToWeenieEditor() {
         ActiveEditor = ProjectManager.Instance?.GetProjectService<WeenieEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToMonsterEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<MonsterEditorViewModel>();
     }
 
     [RelayCommand]
