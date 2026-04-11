@@ -280,6 +280,12 @@ namespace WorldBuilder.Editors.Spell {
             var copy = new SpellBase();
             SelectedDetail.ApplyTo(copy);
 
+            if (SelectedDetail.DbSpell != null && _spellDbDoc != null) {
+                var clone = CloneDbSpellRecord(SelectedDetail.DbSpell, nextId);
+                _dbSpellCache[nextId] = clone;
+                _spellDbDoc.Set(nextId, clone);
+            }
+
             var sourceName = SelectedDetail.Name?.Trim() ?? "";
             copy.Name = string.IsNullOrWhiteSpace(sourceName)
                 ? $"New Spell {nextId}"
@@ -327,133 +333,6 @@ namespace WorldBuilder.Editors.Spell {
             ApplyFilter();
             StatusText = $"Deleted spell #{id}. Use File > Export to write DATs.";
             ShowToast($"Deleted spell 0x{id:X4}.");
-        }
-
-        [RelayCommand]
-        private void CopySpell() {
-            if (SelectedSpell == null || SelectedDetail == null || _spellTable == null || _allSpells == null)
-                return;
-
-            if (_allSpells.Count <= 0)
-                return;
-
-            uint nextId = 1;
-            nextId = _allSpells.Keys.Max() + 1;
-
-            var newSpell = new SpellBase();
-
-            SelectedDetail.ApplyTo(newSpell);
-
-            if (SelectedDetail.DbSpell != null && _spellDbDoc != null) {
-                var original = SelectedDetail.DbSpell;
-
-                var clone = new SpellRecord {
-                    Id = nextId,
-                    Name = original.Name,
-
-                    StatModType = original.StatModType,
-                    StatModKey = original.StatModKey,
-                    StatModVal = original.StatModVal,
-
-                    EType = original.EType,
-                    BaseIntensity = original.BaseIntensity,
-                    Variance = original.Variance,
-
-                    Wcid = original.Wcid,
-
-                    NumProjectiles = original.NumProjectiles,
-                    NumProjectilesVariance = original.NumProjectilesVariance,
-                    SpreadAngle = original.SpreadAngle,
-                    VerticalAngle = original.VerticalAngle,
-                    DefaultLaunchAngle = original.DefaultLaunchAngle,
-
-                    NonTracking = original.NonTracking,
-
-                    CreateOffsetOriginX = original.CreateOffsetOriginX,
-                    CreateOffsetOriginY = original.CreateOffsetOriginY,
-                    CreateOffsetOriginZ = original.CreateOffsetOriginZ,
-
-                    PaddingOriginX = original.PaddingOriginX,
-                    PaddingOriginY = original.PaddingOriginY,
-                    PaddingOriginZ = original.PaddingOriginZ,
-
-                    DimsOriginX = original.DimsOriginX,
-                    DimsOriginY = original.DimsOriginY,
-                    DimsOriginZ = original.DimsOriginZ,
-
-                    PeturbationOriginX = original.PeturbationOriginX,
-                    PeturbationOriginY = original.PeturbationOriginY,
-                    PeturbationOriginZ = original.PeturbationOriginZ,
-
-                    ImbuedEffect = original.ImbuedEffect,
-
-                    SlayerCreatureType = original.SlayerCreatureType,
-                    SlayerDamageBonus = original.SlayerDamageBonus,
-
-                    CritFreq = original.CritFreq,
-                    CritMultiplier = original.CritMultiplier,
-
-                    IgnoreMagicResist = original.IgnoreMagicResist,
-                    ElementalModifier = original.ElementalModifier,
-
-                    DrainPercentage = original.DrainPercentage,
-                    DamageRatio = original.DamageRatio,
-
-                    DamageType = original.DamageType,
-
-                    Boost = original.Boost,
-                    BoostVariance = original.BoostVariance,
-
-                    Source = original.Source,
-                    Destination = original.Destination,
-
-                    Proportion = original.Proportion,
-                    LossPercent = original.LossPercent,
-
-                    SourceLoss = original.SourceLoss,
-                    TransferCap = original.TransferCap,
-                    MaxBoostAllowed = original.MaxBoostAllowed,
-
-                    TransferBitfield = original.TransferBitfield,
-
-                    Index = original.Index,
-                    Link = original.Link,
-
-                    PositionObjCellId = original.PositionObjCellId,
-
-                    PositionOriginX = original.PositionOriginX,
-                    PositionOriginY = original.PositionOriginY,
-                    PositionOriginZ = original.PositionOriginZ,
-
-                    PositionAnglesW = original.PositionAnglesW,
-                    PositionAnglesX = original.PositionAnglesX,
-                    PositionAnglesY = original.PositionAnglesY,
-                    PositionAnglesZ = original.PositionAnglesZ,
-
-                    MinPower = original.MinPower,
-                    MaxPower = original.MaxPower,
-                    PowerVariance = original.PowerVariance,
-
-                    DispelSchool = original.DispelSchool,
-
-                    Align = original.Align,
-                    Number = original.Number,
-                    NumberVariance = original.NumberVariance,
-
-                    DotDuration = original.DotDuration
-                };
-
-                _dbSpellCache[nextId] = clone;
-                _spellDbDoc?.Set(nextId, clone);
-            }
-
-            newSpell.Name = newSpell.Name + " - Copy";
-            _allSpells[nextId] = newSpell;
-
-            ApplyFilter();
-
-            SelectedSpell = Spells.FirstOrDefault(s => s.Id == nextId);
-            StatusText = $"Copied spell to new ID: 0x{nextId:X4}. Remember to Save.";
         }
 
         [RelayCommand]
@@ -746,6 +625,77 @@ namespace WorldBuilder.Editors.Spell {
                 NonComponentTargetType = source.NonComponentTargetType,
                 ManaMod = source.ManaMod,
                 Components = (source.Components ?? new List<uint>()).ToList()
+            };
+        }
+
+        private static SpellRecord CloneDbSpellRecord(SpellRecord source, uint nextId) {
+            return new SpellRecord {
+                Id = nextId,
+                Name = source.Name,
+                StatModType = source.StatModType,
+                StatModKey = source.StatModKey,
+                StatModVal = source.StatModVal,
+                EType = source.EType,
+                BaseIntensity = source.BaseIntensity,
+                Variance = source.Variance,
+                Wcid = source.Wcid,
+                NumProjectiles = source.NumProjectiles,
+                NumProjectilesVariance = source.NumProjectilesVariance,
+                SpreadAngle = source.SpreadAngle,
+                VerticalAngle = source.VerticalAngle,
+                DefaultLaunchAngle = source.DefaultLaunchAngle,
+                NonTracking = source.NonTracking,
+                CreateOffsetOriginX = source.CreateOffsetOriginX,
+                CreateOffsetOriginY = source.CreateOffsetOriginY,
+                CreateOffsetOriginZ = source.CreateOffsetOriginZ,
+                PaddingOriginX = source.PaddingOriginX,
+                PaddingOriginY = source.PaddingOriginY,
+                PaddingOriginZ = source.PaddingOriginZ,
+                DimsOriginX = source.DimsOriginX,
+                DimsOriginY = source.DimsOriginY,
+                DimsOriginZ = source.DimsOriginZ,
+                PeturbationOriginX = source.PeturbationOriginX,
+                PeturbationOriginY = source.PeturbationOriginY,
+                PeturbationOriginZ = source.PeturbationOriginZ,
+                ImbuedEffect = source.ImbuedEffect,
+                SlayerCreatureType = source.SlayerCreatureType,
+                SlayerDamageBonus = source.SlayerDamageBonus,
+                CritFreq = source.CritFreq,
+                CritMultiplier = source.CritMultiplier,
+                IgnoreMagicResist = source.IgnoreMagicResist,
+                ElementalModifier = source.ElementalModifier,
+                DrainPercentage = source.DrainPercentage,
+                DamageRatio = source.DamageRatio,
+                DamageType = source.DamageType,
+                Boost = source.Boost,
+                BoostVariance = source.BoostVariance,
+                Source = source.Source,
+                Destination = source.Destination,
+                Proportion = source.Proportion,
+                LossPercent = source.LossPercent,
+                SourceLoss = source.SourceLoss,
+                TransferCap = source.TransferCap,
+                MaxBoostAllowed = source.MaxBoostAllowed,
+                TransferBitfield = source.TransferBitfield,
+                Index = source.Index,
+                Link = source.Link,
+                PositionObjCellId = source.PositionObjCellId,
+                PositionOriginX = source.PositionOriginX,
+                PositionOriginY = source.PositionOriginY,
+                PositionOriginZ = source.PositionOriginZ,
+                PositionAnglesW = source.PositionAnglesW,
+                PositionAnglesX = source.PositionAnglesX,
+                PositionAnglesY = source.PositionAnglesY,
+                PositionAnglesZ = source.PositionAnglesZ,
+                MinPower = source.MinPower,
+                MaxPower = source.MaxPower,
+                PowerVariance = source.PowerVariance,
+                DispelSchool = source.DispelSchool,
+                Align = source.Align,
+                Number = source.Number,
+                NumberVariance = source.NumberVariance,
+                DotDuration = source.DotDuration,
+                LastModified = source.LastModified
             };
         }
 
