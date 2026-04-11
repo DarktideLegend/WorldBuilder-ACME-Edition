@@ -5,6 +5,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Chorizite.DatReaderWriter" Version="2.1.2" />
+    <PackageReference Include="Chorizite.DatReaderWriter" Version="2.1.6" />
   </ItemGroup>
 </Project>

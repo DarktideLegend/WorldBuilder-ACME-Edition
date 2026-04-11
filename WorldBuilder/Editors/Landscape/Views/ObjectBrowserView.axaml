@@ -42,6 +42,25 @@
                     FontSize="10" Padding="6,3" Margin="0,2,0,0"
                     Background="Transparent" BorderThickness="0" Foreground="#6ec07a" />
 
+            <!-- Place-as toggle: only relevant for weenies -->
+            <Border IsVisible="{Binding ShowWeenies}"
+                    Background="#110a22" BorderBrush="#2a1d42" BorderThickness="1"
+                    CornerRadius="4" Padding="6,4">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Place weenie as:" FontSize="10" Foreground="#8a7a9e" />
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <RadioButton Content="Static (DAT)"
+                                     IsChecked="{Binding PlaceWeenieAsInstance, Converter={x:Static BoolConverters.Not}}"
+                                     FontSize="10" Foreground="#c0b0d8"
+                                     ToolTip.Tip="Embeds the weenie's model as a static object in the DAT. Fast but not server-side." />
+                        <RadioButton Content="DB Instance"
+                                     IsChecked="{Binding PlaceWeenieAsInstance}"
+                                     FontSize="10" Foreground="#d4a843"
+                                     ToolTip.Tip="Creates an ACE landblock_instance entry exported to SQL. The weenie lives on the server." />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <TextBlock
                 FontSize="10"
                 Foreground="{DynamicResource SystemBaseMediumColor}"

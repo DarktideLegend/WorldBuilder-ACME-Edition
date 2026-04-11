@@ -60,6 +60,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         [ObservableProperty] private bool _isLoadingWeenies;
         [ObservableProperty] private bool _hasMore;
 
+        /// <summary>
+        /// When true, clicking a weenie item creates an ACE DB OutdoorInstancePlacement instead of a DAT static.
+        /// When false (default), weenies are embedded in the DAT as static objects (original behavior).
+        /// </summary>
+        [ObservableProperty] private bool _placeWeenieAsInstance = false;
+
         private const int BatchSize = 100;
         private int _displayLimit = BatchSize;
 
@@ -618,6 +624,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         [RelayCommand]
         private void SelectForPlacement(ObjectBrowserItem item) {
             _context.ObjectSelection.IsPlacementMode = true;
+            _context.ObjectSelection.PendingWeenieClassId =
+                (item.WeenieClassId.HasValue && PlaceWeenieAsInstance) ? item.WeenieClassId : null;
             _context.ObjectSelection.PlacementPreview = new StaticObject {
                 Id = item.Id,
                 IsSetup = item.IsParticleEmitter ? false : item.IsSetup,
@@ -627,10 +635,18 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 IsParticleEmitter = item.IsParticleEmitter
             };
 
-            Status = item.IsParticleEmitter
-                ? $"Placing particle emitter 0x{item.Id:X8} - click terrain to place, Escape to cancel"
-                : $"Placing 0x{item.Id:X8} - click terrain to place, Escape to cancel";
-            Console.WriteLine($"[ObjectBrowser] Selected 0x{item.Id:X8} for placement (IsSetup={item.IsSetup}, particle={item.IsParticleEmitter})");
+            if (item.WeenieClassId.HasValue && PlaceWeenieAsInstance) {
+                Status = $"Placing weenie {item.WeenieClassId} as DB instance — click terrain to place, Escape to cancel";
+            }
+            else if (item.WeenieClassId.HasValue) {
+                Status = $"Placing weenie {item.WeenieClassId} as static — click terrain to place, Escape to cancel";
+            }
+            else {
+                Status = item.IsParticleEmitter
+                    ? $"Placing particle emitter 0x{item.Id:X8} - click terrain to place, Escape to cancel"
+                    : $"Placing 0x{item.Id:X8} - click terrain to place, Escape to cancel";
+            }
+            Console.WriteLine($"[ObjectBrowser] Selected 0x{item.Id:X8} for placement (IsSetup={item.IsSetup}, particle={item.IsParticleEmitter}, wcid={item.WeenieClassId}, asInstance={PlaceWeenieAsInstance})");
 
             PlacementRequested?.Invoke(this, EventArgs.Empty);
         }

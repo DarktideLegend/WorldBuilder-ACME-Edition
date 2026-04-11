@@ -110,6 +110,17 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
 
             var objHit = DungeonObjectRaycast.Raycast(origin, dir, ctx.Document, ctx.Scene);
             if (objHit.Hit) {
+                if (objHit.IsInstancePlacement) {
+                    var placement = ctx.Document.InstancePlacements[objHit.InstancePlacementIndex];
+                    ctx.SelectedInstancePlacementIndex = objHit.InstancePlacementIndex;
+                    ctx.SelectedObjIndex = -1;
+                    ctx.SelectedCell = null;
+                    ctx.SelectedCells.Clear();
+                    ctx.NotifySelectionChanged();
+                    _didClickSelect = true;
+                    return true;
+                }
+
                 var cell = ctx.Document.GetCell(objHit.CellNumber);
                 if (cell != null && objHit.ObjectIndex < cell.StaticObjects.Count) {
                     bool alreadySelected = ctx.SelectedObjCellNum == objHit.CellNumber
@@ -118,6 +129,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                     ctx.SelectedObjIndex = objHit.ObjectIndex;
                     ctx.SelectedCell = null;
                     ctx.SelectedCells.Clear();
+                    ctx.SelectedInstancePlacementIndex = -1;
                     ctx.NotifySelectionChanged();
                     _didClickSelect = true;
 
@@ -149,6 +161,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                     ctx.SelectedCell = hit.Cell;
                 }
                 ctx.SelectedObjIndex = -1;
+                ctx.SelectedInstancePlacementIndex = -1;
                 ctx.NotifySelectionChanged();
                 _didClickSelect = true;
 
@@ -249,6 +262,7 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 ctx.SelectedCells.Clear();
                 ctx.SelectedCell = null;
                 ctx.SelectedObjIndex = -1;
+                ctx.SelectedInstancePlacementIndex = -1;
                 ctx.NotifySelectionChanged();
                 return false;
             }
@@ -346,14 +360,27 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
             if (ctx.Document != null && ctx.Scene != null) {
                 var objHover = DungeonObjectRaycast.Raycast(hoverRay.Value.origin, hoverRay.Value.direction, ctx.Document, ctx.Scene);
                 if (objHover.Hit) {
-                    var hoverCell = ctx.Document.GetCell(objHover.CellNumber);
-                    if (hoverCell != null && objHover.ObjectIndex < hoverCell.StaticObjects.Count) {
-                        var stab = hoverCell.StaticObjects[objHover.ObjectIndex];
-                        ctx.Scene.HoveredObjectId = stab.Id;
-                        ctx.Scene.HoveredObjectIsSetup = (stab.Id & 0xFF000000) == 0x02000000;
-                        ctx.Scene.HoveredObjectPosition = StabToWorld(stab.Origin, ctx.Document);
-                        ctx.Scene.HoveredObjectOrientation = stab.Orientation;
-                        ctx.Scene.HoveredObjectScale = stab.Scale;
+                    if (objHover.IsInstancePlacement) {
+                        var placement = ctx.Document.InstancePlacements[objHover.InstancePlacementIndex];
+                        if (ctx.Scene.TryGetWeenieSetupId(placement.WeenieClassId, out var setupId) && setupId != 0) {
+                            bool isSetup = (setupId & 0xFF000000) == 0x02000000;
+                            ctx.Scene.HoveredObjectId = setupId;
+                            ctx.Scene.HoveredObjectIsSetup = isSetup;
+                            ctx.Scene.HoveredObjectPosition = objHover.WorldOrigin;
+                            ctx.Scene.HoveredObjectOrientation = placement.Orientation;
+                            ctx.Scene.HoveredObjectScale = Vector3.One;
+                        }
+                    }
+                    else {
+                        var hoverCell = ctx.Document.GetCell(objHover.CellNumber);
+                        if (hoverCell != null && objHover.ObjectIndex < hoverCell.StaticObjects.Count) {
+                            var stab = hoverCell.StaticObjects[objHover.ObjectIndex];
+                            ctx.Scene.HoveredObjectId = stab.Id;
+                            ctx.Scene.HoveredObjectIsSetup = (stab.Id & 0xFF000000) == 0x02000000;
+                            ctx.Scene.HoveredObjectPosition = StabToWorld(stab.Origin, ctx.Document);
+                            ctx.Scene.HoveredObjectOrientation = stab.Orientation;
+                            ctx.Scene.HoveredObjectScale = stab.Scale;
+                        }
                     }
                 } else {
                     ctx.Scene.HoveredObjectPosition = null;
@@ -396,8 +423,22 @@ namespace WorldBuilder.Editors.Dungeon.Tools {
                 ctx.SelectedCells.Clear();
                 ctx.SelectedCell = null;
                 ctx.SelectedObjIndex = -1;
+                ctx.SelectedInstancePlacementIndex = -1;
                 ctx.NotifySelectionChanged();
                 return true;
+            }
+
+            if (e.Key == Key.Delete && ctx.HasSelectedInstancePlacement && ctx.Document != null) {
+                var idx = ctx.SelectedInstancePlacementIndex;
+                if (idx >= 0 && idx < ctx.Document.InstancePlacements.Count) {
+                    ctx.Document.InstancePlacements.RemoveAt(idx);
+                    ctx.Document.MarkDirty();
+                    ctx.SelectedInstancePlacementIndex = -1;
+                    ctx.NotifySelectionChanged();
+                    ctx.RefreshRendering();
+                    ctx.SetStatus("Deleted instance placement.");
+                    return true;
+                }
             }
             return false;
         }
