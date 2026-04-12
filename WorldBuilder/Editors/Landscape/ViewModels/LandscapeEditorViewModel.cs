@@ -784,11 +784,10 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             TerrainSystem.TerrainDoc.ApplyBulkImport(result.TerrainChanges);
 
-            // Place buildings as StaticObjects and immediately instantiate blueprints so
-            // EnvCells exist in the in-memory DAT for in-editor interior preview.
-            // LandblockDocument.SaveToDatsInternal handles moved/existing buildings at export.
-            int blueprintSuccess = 0, blueprintFail = 0;
-            var lbiCache = new Dictionary<ushort, (LandBlockInfo lbi, uint numCells)>();
+            // Store buildings as StaticObjects in LandblockDocuments (dirty document pattern).
+            // LandblockDocument.SaveToDatsInternal handles blueprint instantiation, EnvCell
+            // creation, and LandBlockInfo writes at export time.
+            int buildingCount = 0;
 
             foreach (var (lbKey, plannedBuildings) in result.BuildingPlacements) {
                 var docId = $"landblock_{lbKey:X4}";
@@ -802,57 +801,11 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                         Orientation = planned.Orientation,
                         Scale = Vector3.One
                     });
-
-                    try {
-                        var blueprint = BuildingBlueprintCache.GetBlueprint(planned.ModelId, _dats!);
-                        if (blueprint != null && blueprint.Cells.Count > 0) {
-                            uint lbId = lbKey;
-                            if (!lbiCache.TryGetValue(lbKey, out var cached)) {
-                                uint infoId = (lbId << 16) | 0xFFFE;
-                                if (!_dats!.TryGet<LandBlockInfo>(infoId, out var lbi)) {
-                                    lbi = new LandBlockInfo { Id = infoId };
-                                }
-                                cached = (lbi, lbi.NumCells);
-                                lbiCache[lbKey] = cached;
-                            }
-
-                            uint lbX = (uint)((lbKey >> 8) & 0xFF);
-                            uint lbY = (uint)(lbKey & 0xFF);
-                            var localOrigin = new Vector3(
-                                planned.WorldPosition.X - lbX * 192f,
-                                planned.WorldPosition.Y - lbY * 192f,
-                                planned.WorldPosition.Z);
-
-                            var instantiated = BuildingBlueprintCache.InstantiateBlueprint(
-                                blueprint, localOrigin, planned.Orientation,
-                                lbId, cached.numCells, _dats!, iteration: 0, logger: null);
-
-                            if (instantiated.HasValue) {
-                                cached.lbi.Buildings.Add(instantiated.Value.building);
-                                cached = (cached.lbi, cached.numCells + (uint)instantiated.Value.cellCount);
-                                lbiCache[lbKey] = cached;
-                                blueprintSuccess++;
-                            }
-                            else {
-                                blueprintFail++;
-                            }
-                        }
-                        else {
-                            blueprintFail++;
-                        }
-                    }
-                    catch (Exception ex) {
-                        Console.WriteLine($"[WorldGen] Blueprint error for 0x{planned.ModelId:X8}: {ex.Message}");
-                        blueprintFail++;
-                    }
+                    buildingCount++;
                 }
             }
 
-            // Persist LandBlockInfos that received blueprint buildings into the in-memory DAT
-            foreach (var (lbKey, cached) in lbiCache) {
-                cached.lbi.NumCells = cached.numCells;
-                _dats!.TrySave(cached.lbi, iteration: 0);
-            }
+            Console.WriteLine($"[WorldGen] Stored {buildingCount} buildings as StaticObjects — EnvCells will be created on export.");
 
             // Add decorations as regular static objects
             foreach (var (lbKey, decorObjects) in result.DecorationPlacements) {
@@ -885,8 +838,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             }
 
             Console.WriteLine($"[WorldGen] Applied: {result.TotalVerticesModified} terrain vertices, " +
-                $"{result.Towns.Count} towns, {blueprintSuccess} buildings (blueprinted), " +
-                $"{blueprintFail} failed, {result.TotalDecorationsPlaced} decorations, " +
+                $"{result.Towns.Count} towns, {buildingCount} buildings, " +
+                $"{result.TotalDecorationsPlaced} decorations, " +
                 $"{result.TotalRoadVertices} road vertices, {warmupIds.Count} models queued for warmup");
 
             await ShowWorldGenSummary(result);

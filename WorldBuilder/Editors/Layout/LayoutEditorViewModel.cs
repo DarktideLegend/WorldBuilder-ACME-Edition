@@ -28,6 +28,7 @@ namespace WorldBuilder.Editors.Layout {
         private IDatReaderWriter? _dats;
         private Project? _project;
         private LayoutDatDocument? _layoutDoc;
+        private PortalDatDocument? _portalDoc;
         private uint[] _allLayoutIds = Array.Empty<uint>();
 
         [ObservableProperty] private string _statusText = "No layouts loaded";
@@ -52,6 +53,7 @@ namespace WorldBuilder.Editors.Layout {
             _project = project;
             _dats = project.DocumentManager.Dats;
             _layoutDoc = project.DocumentManager.GetOrCreateDocumentAsync<LayoutDatDocument>(LayoutDatDocument.DocumentId).GetAwaiter().GetResult();
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).GetAwaiter().GetResult();
             LoadLayoutIds();
             SaveLayoutToProjectCommand.NotifyCanExecuteChanged();
         }
@@ -111,7 +113,7 @@ namespace WorldBuilder.Editors.Layout {
                 if (source != null) {
                     var localDb = _dats.Dats.Local ?? throw new InvalidOperationException("DAT collection has no local database (client_local).");
                     var working = LayoutDescBinary.Clone(source, value.Id, localDb);
-                    SelectedDetail = new LayoutDetailViewModel(value.Id, working, _dats, _textureImport);
+                    SelectedDetail = new LayoutDetailViewModel(value.Id, working, _dats, _textureImport, _portalDoc);
                     _ = SelectedDetail.LoadPreviewTexturesAsync();
                     var src = fromProject ? "project override" : "client DAT";
                     StatusText = $"Layout 0x{value.Id:X8} ({src}): {working.Width}x{working.Height}, {working.Elements.Count} elements";
@@ -164,6 +166,7 @@ namespace WorldBuilder.Editors.Layout {
     public partial class LayoutDetailViewModel : ObservableObject {
         private readonly IDatReaderWriter? _dats;
         private readonly TextureImportService? _textureImport;
+        private readonly PortalDatDocument? _portalDoc;
 
         public uint LayoutId { get; }
         public string LayoutIdHex { get; }
@@ -197,9 +200,10 @@ namespace WorldBuilder.Editors.Layout {
         [ObservableProperty] private string _layoutWidthText = "";
         [ObservableProperty] private string _layoutHeightText = "";
 
-        public LayoutDetailViewModel(uint id, LayoutDesc workingLayout, IDatReaderWriter? dats, TextureImportService? textureImport = null) {
+        public LayoutDetailViewModel(uint id, LayoutDesc workingLayout, IDatReaderWriter? dats, TextureImportService? textureImport = null, PortalDatDocument? portalDoc = null) {
             _dats = dats;
             _textureImport = textureImport;
+            _portalDoc = portalDoc;
             WorkingLayout = workingLayout;
             workingLayout.Id = id;
             LayoutId = id;
@@ -242,7 +246,7 @@ namespace WorldBuilder.Editors.Layout {
         }
 
         bool CanReplaceUiRenderSurface() {
-            if (SelectedElement == null || _textureImport == null || _dats == null) return false;
+            if (SelectedElement == null || _textureImport == null || _dats == null || _portalDoc == null) return false;
             var sid = LayoutMediaHelper.TryPrimarySurfaceForElement(SelectedElement.Source);
             return sid.HasValue && TryUnpackRenderSurface(_dats, sid.Value, out _);
         }
@@ -261,7 +265,7 @@ namespace WorldBuilder.Editors.Layout {
 
         [RelayCommand(CanExecute = nameof(CanReplaceUiRenderSurface))]
         private async Task ReplaceUiRenderSurfaceAsync() {
-            if (SelectedElement == null || _textureImport == null || _dats == null) return;
+            if (SelectedElement == null || _textureImport == null || _dats == null || _portalDoc == null) return;
             var sid = LayoutMediaHelper.TryPrimarySurfaceForElement(SelectedElement.Source);
             if (!sid.HasValue || !TryUnpackRenderSurface(_dats, sid.Value, out _)) {
                 Console.WriteLine("[Layout] Replace texture: primary image id is not a portal RenderSurface (use hex + Apply with a 0x06…… id, or a raw id that resolves to RenderSurface).");
@@ -284,7 +288,7 @@ namespace WorldBuilder.Editors.Layout {
             if (localPath == null) return;
 
             try {
-                if (!_textureImport.TryOverwriteUiRenderSurface(localPath, sid.Value)) {
+                if (!_textureImport.TryOverwriteUiRenderSurface(localPath, sid.Value, _portalDoc)) {
                     return;
                 }
 
